@@ -13,14 +13,20 @@ import (
 )
 
 const (
-	routeStrategyPriority   = "priority"
-	routeStrategyRoundRobin = "round-robin"
-	defaultCooldownSeconds  = 60
-	defaultRetentionDays    = 365
-	maxRetentionDays        = 3650
-	defaultTargetWeight     = 1
-	maxTargetWeight         = 1_000_000
+	routeStrategyPriority      = "priority"
+	routeStrategyRoundRobin    = "round-robin"
+	routeStrategyRandom        = "random"
+	routeStrategyLastKnownGood = "last_known_good"
+	defaultCooldownSeconds     = 60
+	defaultRetentionDays       = 365
+	maxRetentionDays           = 3650
+	defaultTargetWeight        = 1
+	maxTargetWeight            = 1_000_000
 )
+
+func defaultLastKnownGoodPolicy() lastKnownGoodPolicy {
+	return lastKnownGoodPolicy{SuccessRateThreshold: 0.9, MinimumSamples: 20, ObservationWindowMinutes: 60}
+}
 
 // defaultFallbackOnStatus is the status set used when fallback_on_status is not
 // configured, and it matches the 0.5.0 behaviour: target availability and quota
@@ -36,10 +42,17 @@ type modelTarget struct {
 	Weight int
 }
 
+type lastKnownGoodPolicy struct {
+	SuccessRateThreshold     float64
+	MinimumSamples           int
+	ObservationWindowMinutes int
+}
+
 type modelRoute struct {
 	Alias           string
 	Strategy        string
 	CooldownSeconds int
+	LastKnownGood   lastKnownGoodPolicy
 	Targets         []modelTarget
 }
 
@@ -49,12 +62,15 @@ type modelTargetYAML struct {
 }
 
 type modelRouteYAML struct {
-	Alias                 string             `yaml:"alias" json:"alias"`
-	Strategy              string             `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-	CooldownSeconds       *int               `yaml:"cooldown_seconds,omitempty" json:"cooldown_seconds,omitempty"`
-	LegacyCooldownSeconds *int               `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
-	Models                *[]string          `yaml:"models,omitempty" json:"models,omitempty"`
-	Targets               *[]modelTargetYAML `yaml:"targets,omitempty" json:"targets,omitempty"`
+	Alias                    string             `yaml:"alias" json:"alias"`
+	Strategy                 string             `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	CooldownSeconds          *int               `yaml:"cooldown_seconds,omitempty" json:"cooldown_seconds,omitempty"`
+	LegacyCooldownSeconds    *int               `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
+	SuccessRateThreshold     *float64           `yaml:"success_rate_threshold,omitempty" json:"success_rate_threshold,omitempty"`
+	MinimumSamples           *int               `yaml:"minimum_samples,omitempty" json:"minimum_samples,omitempty"`
+	ObservationWindowMinutes *int               `yaml:"observation_window_minutes,omitempty" json:"observation_window_minutes,omitempty"`
+	Models                   *[]string          `yaml:"models,omitempty" json:"models,omitempty"`
+	Targets                  *[]modelTargetYAML `yaml:"targets,omitempty" json:"targets,omitempty"`
 }
 
 type routerConfig struct {
@@ -83,6 +99,8 @@ type fallbackConfigYAML struct {
 	StreamFallbackBeforeFirstChunkOnly *bool  `yaml:"stream_fallback_before_first_chunk_only,omitempty"`
 }
 
+const unsupportedAccountAwareSchemaError = "model-combo config does not support legacy account-aware schema fields account_pools or combos; migrate to routes with model targets"
+
 type routerConfigYAML struct {
 	Enabled       *bool               `yaml:"enabled,omitempty"`
 	Priority      int                 `yaml:"priority,omitempty"`
@@ -94,7 +112,29 @@ type routerConfigYAML struct {
 	Fallback      *fallbackConfigYAML `yaml:"fallback,omitempty"`
 }
 
+func containsUnsupportedAccountAwareSchema(node *yaml.Node) bool {
+	if node.Kind == yaml.MappingNode {
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			if node.Content[index].Value == "account_pools" || node.Content[index].Value == "combos" {
+				return true
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if containsUnsupportedAccountAwareSchema(child) {
+			return true
+		}
+	}
+	return false
+}
+
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
+	if len(bytes.TrimSpace(raw)) > 0 {
+		var document yaml.Node
+		if yaml.Unmarshal(raw, &document) == nil && containsUnsupportedAccountAwareSchema(&document) {
+			return routerConfig{}, errors.New(unsupportedAccountAwareSchemaError)
+		}
+	}
 	wire := routerConfigYAML{}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		decoder := yaml.NewDecoder(bytes.NewReader(raw))
@@ -111,7 +151,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		}
 	}
 	if wire.Routes != nil && wire.LegacyRoutes != nil {
-		return routerConfig{}, errors.New("model-router config must not contain both routes and model-routes")
+		return routerConfig{}, errors.New("model-combo config must not contain both routes and model-routes")
 	}
 	dataPath := strings.TrimSpace(wire.DataPath)
 	if dataPath == "" {
@@ -150,6 +190,19 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		} else if item.LegacyCooldownSeconds != nil {
 			cooldown = *item.LegacyCooldownSeconds
 		}
+		policy := defaultLastKnownGoodPolicy()
+		if item.SuccessRateThreshold != nil {
+			policy.SuccessRateThreshold = *item.SuccessRateThreshold
+		}
+		if item.MinimumSamples != nil {
+			policy.MinimumSamples = *item.MinimumSamples
+		}
+		if item.ObservationWindowMinutes != nil {
+			policy.ObservationWindowMinutes = *item.ObservationWindowMinutes
+		}
+		if policy.SuccessRateThreshold <= 0 || policy.SuccessRateThreshold > 1 || policy.MinimumSamples < 1 || policy.ObservationWindowMinutes < 1 {
+			return routerConfig{}, fmt.Errorf("routes[%d] %q: invalid last_known_good policy", index, strings.TrimSpace(item.Alias))
+		}
 		if item.Models != nil && item.Targets != nil {
 			return routerConfig{}, fmt.Errorf("routes[%d] %q: must not contain both models and targets", index, strings.TrimSpace(item.Alias))
 		}
@@ -163,6 +216,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 			Alias:           strings.TrimSpace(item.Alias),
 			Strategy:        strings.ToLower(strings.TrimSpace(item.Strategy)),
 			CooldownSeconds: cooldown,
+			LastKnownGood:   policy,
 			Targets:         targets,
 		}
 		if route.Strategy == "" {
@@ -246,8 +300,8 @@ func validateRoute(route modelRoute, index int, aliases map[string]int) error {
 	if previous, duplicate := aliases[routeKey(route.Alias)]; duplicate {
 		return fmt.Errorf("routes[%d] %q: duplicate alias (also at index %d)", index, route.Alias, previous)
 	}
-	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin {
-		return fmt.Errorf("routes[%d] %q: strategy must be %q or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin)
+	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin && route.Strategy != routeStrategyRandom && route.Strategy != routeStrategyLastKnownGood {
+		return fmt.Errorf("routes[%d] %q: strategy must be %q, %q, %q, or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin, routeStrategyRandom, routeStrategyLastKnownGood)
 	}
 	if route.CooldownSeconds < 0 {
 		return fmt.Errorf("routes[%d] %q: cooldown_seconds must be >= 0", index, route.Alias)

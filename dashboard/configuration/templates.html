@@ -30,12 +30,30 @@
       <div class="field-grid">
         <div class="field">
           <label>Selection strategy</label>
-          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option></select>
+          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option><option value="random">Random</option><option value="last_known_good">Last known good</option></select>
         </div>
         <div class="field">
           <label>Cooldown seconds</label>
           <input type="number" data-field="cooldown_seconds" min="0" step="1" inputmode="numeric">
           <small>Zero uses the 60-second default.</small>
+        </div>
+      </div>
+
+      <div class="field-grid" data-lkg-fields hidden>
+        <div class="field">
+          <label>Success rate threshold</label>
+          <input type="number" data-field="success_rate_threshold" min="0" max="1" step="any" inputmode="decimal">
+          <small>Fraction from 0 to 1. Default 0.9.</small>
+        </div>
+        <div class="field">
+          <label>Minimum samples</label>
+          <input type="number" data-field="minimum_samples" min="1" step="1" inputmode="numeric">
+          <small>Default 20.</small>
+        </div>
+        <div class="field">
+          <label>Observation window minutes</label>
+          <input type="number" data-field="observation_window_minutes" min="1" step="1" inputmode="numeric">
+          <small>Default 60.</small>
         </div>
       </div>
 

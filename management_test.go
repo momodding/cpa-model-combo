@@ -31,21 +31,21 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &management); err != nil {
 		t.Fatalf("decode management result: %v", err)
 	}
-	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Router" {
+	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Combo" {
 		t.Fatalf("resources = %#v", management.Resources)
 	}
 	wantedRoutes := map[string]bool{
-		http.MethodPost + " /plugins/model-router/validate":          false,
-		http.MethodGet + " /plugins/model-router/usage/dashboard":    false,
-		http.MethodGet + " /plugins/model-router/usage/overview":     false,
-		http.MethodGet + " /plugins/model-router/usage/groups":       false,
-		http.MethodGet + " /plugins/model-router/usage/requests":     false,
-		http.MethodGet + " /plugins/model-router/usage/prices":       false,
-		http.MethodPut + " /plugins/model-router/usage/prices":       false,
-		http.MethodPost + " /plugins/model-router/usage/prices/sync": false,
-		http.MethodGet + " /plugins/model-router/usage/preferences":  false,
-		http.MethodPut + " /plugins/model-router/usage/preferences":  false,
-		http.MethodPost + " /plugins/model-router/usage/reset":       false,
+		http.MethodPost + " /plugins/model-combo/validate":          false,
+		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
+		http.MethodGet + " /plugins/model-combo/usage/overview":     false,
+		http.MethodGet + " /plugins/model-combo/usage/groups":       false,
+		http.MethodGet + " /plugins/model-combo/usage/requests":     false,
+		http.MethodGet + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPut + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPost + " /plugins/model-combo/usage/prices/sync": false,
+		http.MethodGet + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPut + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPost + " /plugins/model-combo/usage/reset":       false,
 	}
 	for _, route := range management.Routes {
 		key := route.Method + " " + route.Path
@@ -85,9 +85,9 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 	}
 	page := string(response.Body)
 	for _, required := range []string{
-		"<title>Model Router</title>",
-		"/v0/management/plugins/model-router/config",
-		"/v0/management/plugins/model-router/validate",
+		"<title>Model Combo</title>",
+		"/v0/management/plugins/model-combo/config",
+		"/v0/management/plugins/model-combo/validate",
 		"/v0/management/api-keys",
 		"/v1/models",
 		"headers.Authorization='Bearer '+key",
@@ -102,7 +102,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"data-target-help",
 		"model+' (unavailable)'",
 		"data-action=\"add-target\"",
-		"role=\"tablist\" aria-label=\"Model Router sections\"",
+		"role=\"tablist\" aria-label=\"Model Combo sections\"",
 		"id=\"configuration-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"",
 		"id=\"usage-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"false\"",
 		"id=\"configuration-panel\" class=\"tab-panel\" role=\"tabpanel\"",
@@ -124,7 +124,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		".configuration-actions-dock { transform: none !important; }",
 		"configurationActionsResizeObserver=new ResizeObserver(updateConfigurationActionsClearance)",
 		"id=\"usage-panel\" class=\"tab-panel usage-panel\" role=\"tabpanel\"",
-		"/v0/management/plugins/model-router/usage",
+		"/v0/management/plugins/model-combo/usage",
 		"requestManagementJSON(USAGE_API+'/dashboard?'",
 		"requestManagementJSON(USAGE_API+'/overview?'",
 		"requestManagementJSON(USAGE_API+'/groups?'",
@@ -207,6 +207,71 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 	}
 	if csp := response.Headers.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "connect-src 'self'") {
 		t.Fatalf("Content-Security-Policy = %q", csp)
+	}
+}
+
+func TestModelRouterManagementDashboardUsesCanonicalResourcePath(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantHTML   bool
+	}{
+		{name: "canonical resource", method: http.MethodGet, path: modelRouterDashboardPath, wantStatus: http.StatusOK, wantHTML: true},
+		{name: "trailing slash resource", method: http.MethodGet, path: modelRouterDashboardPath + "/", wantStatus: http.StatusNotFound},
+		{name: "legacy model router resource", method: http.MethodGet, path: "/v0/resource/plugins/model-router/config", wantStatus: http.StatusNotFound},
+		{name: "unknown resource", method: http.MethodGet, path: "/v0/resource/plugins/model-combo/unknown", wantStatus: http.StatusNotFound},
+		{name: "canonical resource post", method: http.MethodPost, path: modelRouterDashboardPath, wantStatus: http.StatusMethodNotAllowed},
+		{name: "management API stays distinct", method: http.MethodGet, path: "/v0/management/plugins/model-combo/config", wantStatus: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := handleModelRouterManagement(nil, pluginapi.ManagementRequest{Method: test.method, Path: test.path})
+			if response.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.StatusCode, test.wantStatus, response.Body)
+			}
+			if test.wantHTML && !strings.Contains(response.Headers.Get("Content-Type"), "text/html") {
+				t.Fatalf("headers = %v", response.Headers)
+			}
+		})
+	}
+}
+
+func TestModelRouterABIManagementHandlePreservesRequestPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{name: "canonical resource", path: modelRouterDashboardPath, wantStatus: http.StatusOK},
+		{name: "legacy model router resource", path: "/v0/resource/plugins/model-router/config", wantStatus: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := json.Marshal(managementRPCRequest{ManagementRequest: pluginapi.ManagementRequest{
+				Method: http.MethodGet,
+				Path:   test.path,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodManagementHandle, request)
+			if err != nil {
+				t.Fatalf("management.handle error = %v", err)
+			}
+			var envelope abiEnvelope
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatalf("decode envelope: %v", err)
+			}
+			var response pluginapi.ManagementResponse
+			if err := json.Unmarshal(envelope.Result, &response); err != nil {
+				t.Fatalf("decode management response: %v", err)
+			}
+			if response.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.StatusCode, test.wantStatus, response.Body)
+			}
+		})
 	}
 }
 

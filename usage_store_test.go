@@ -503,6 +503,23 @@ func TestUsageStorePrunesOldRecordsOnReopen(t *testing.T) {
 	}
 }
 
+func TestUsageStoreReconfigureSamePathKeepsRetentionAfterPruneFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	store, err := openUsageStore(path, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reconfigure(path, 7); err == nil {
+		t.Fatal("same-path reconfigure error = nil")
+	}
+	if store.retentionDays != 30 {
+		t.Fatalf("retentionDays = %d, want 30", store.retentionDays)
+	}
+}
+
 func TestUsageOverviewIncludesEfficiencyAverages(t *testing.T) {
 	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
 	if err != nil {

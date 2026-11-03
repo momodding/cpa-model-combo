@@ -140,6 +140,18 @@ surprise: true
 			message: "field surprise not found",
 		},
 		{
+			name: "legacy account pools",
+			raw: `account_pools: []
+`,
+			message: unsupportedAccountAwareSchemaError,
+		},
+		{
+			name: "legacy combos",
+			raw: `combos: []
+`,
+			message: unsupportedAccountAwareSchemaError,
+		},
+		{
 			name: "duplicate alias",
 			raw: `routes:
   - alias: Smart
@@ -358,5 +370,78 @@ routes:
 				t.Fatal("an omitted or empty fallback_on_status must keep the default set")
 			}
 		})
+	}
+}
+
+func TestDecodeRouterConfigAcceptsRandomAndLastKnownGoodStrategies(t *testing.T) {
+	for _, strategy := range []string{routeStrategyRandom, routeStrategyLastKnownGood} {
+		t.Run(strategy, func(t *testing.T) {
+			raw := "routes:\n  - alias: smart\n    strategy: " + strategy + "\n    models: [provider-a, provider-b]\n"
+			cfg, err := decodeRouterConfig([]byte(raw))
+			if err != nil {
+				t.Fatalf("decodeRouterConfig() error = %v", err)
+			}
+			if got := cfg.Routes[0].Strategy; got != strategy {
+				t.Fatalf("strategy = %q, want %q", got, strategy)
+			}
+		})
+	}
+}
+
+func TestDecodeRouterConfigRejectsUnknownStrategy(t *testing.T) {
+	raw := "routes:\n  - alias: smart\n    strategy: lottery\n    models: [provider-a]\n"
+	if _, err := decodeRouterConfig([]byte(raw)); err == nil || !strings.Contains(err.Error(), "random") || !strings.Contains(err.Error(), "last_known_good") {
+		t.Fatalf("decodeRouterConfig() error = %v, want strategy list including random and last_known_good", err)
+	}
+}
+
+func TestDecodeRouterConfigRootLastKnownGoodPolicy(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte(`routes:
+  - alias: smart
+    strategy: last_known_good
+    success_rate_threshold: 0.90
+    minimum_samples: 20
+    observation_window_minutes: 60
+    models: [provider-a]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := cfg.Routes[0].LastKnownGood
+	if policy.SuccessRateThreshold != 0.90 || policy.MinimumSamples != 20 || policy.ObservationWindowMinutes != 60 {
+		t.Fatalf("policy = %#v", policy)
+	}
+}
+
+func TestDecodeRouterConfigLastKnownGoodDefaults(t *testing.T) {
+	cfg, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    strategy: last_known_good\n    models: [provider-a]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := cfg.Routes[0].LastKnownGood
+	if policy.SuccessRateThreshold != 0.90 || policy.MinimumSamples != 20 || policy.ObservationWindowMinutes != 60 {
+		t.Fatalf("policy = %#v", policy)
+	}
+}
+
+func TestDecodeRouterConfigRejectsInvalidLastKnownGoodPolicy(t *testing.T) {
+	for _, raw := range []string{"success_rate_threshold: 0", "success_rate_threshold: -0.1", "minimum_samples: 0", "observation_window_minutes: 0"} {
+		_, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    strategy: last_known_good\n    " + raw + "\n    models: [provider-a]\n"))
+		if err == nil {
+			t.Fatalf("expected error for %s", raw)
+		}
+	}
+}
+
+func TestDecodeRouterConfigRejectsNestedLastKnownGoodPolicy(t *testing.T) {
+	raw := `routes:
+  - alias: smart
+    strategy: last_known_good
+    last_known_good:
+      success_rate_threshold: 0.9
+    models: [provider-a]
+`
+	if _, err := decodeRouterConfig([]byte(raw)); err == nil {
+		t.Fatal("decodeRouterConfig() accepted nested last_known_good policy")
 	}
 }

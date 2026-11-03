@@ -18,7 +18,7 @@ func TestAssembleModelRouterDashboardEmbedsEveryAssetOnce(t *testing.T) {
 	}
 	html := string(page)
 	for _, marker := range []string{
-		"<title>Model Router</title>",
+		"<title>Model Combo</title>",
 		"id=\"configuration-panel\"",
 		"id=\"usage-panel\"",
 		"id=\"empty-template\"",

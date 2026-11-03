@@ -441,3 +441,121 @@ func TestStreamModelRewriterSeparatesGluedSSEEvents(t *testing.T) {
 		t.Fatalf("Rewrite() = %q", payload)
 	}
 }
+
+type lkgStreamStep struct {
+	chunk pluginapi.HostModelStreamReadResponse
+	err   error
+}
+
+// routeObservationSummary returns last success and observation counts for model under route.
+func routeObservationSummary(t *testing.T, runtime *routeRuntime, route modelRoute, model string) (string, int, int) {
+	t.Helper()
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state == nil {
+		t.Fatal("route state missing")
+	}
+	successes, failures := 0, 0
+	for _, obs := range state.observations[model] {
+		if obs.success {
+			successes++
+		} else {
+			failures++
+		}
+	}
+	return state.lastSuccess, successes, failures
+}
+
+func TestExecuteStreamLastKnownGoodRecordsSuccessOnlyOnCompletion(t *testing.T) {
+	data := []byte("data: {\"model\":\"provider-a\"}\n\n")
+	upstreamErr := statusError{status: 500, message: "upstream failed"}
+	cases := []struct {
+		name         string
+		models       []string
+		steps        []lkgStreamStep
+		emitErr      error
+		wantErr      bool
+		wantSuccess  int
+		wantFailures int // -1 = not asserted
+		wantStarts   int
+		wantLast     string
+	}{
+		{
+			name:         "completed stream records one success",
+			models:       []string{"provider-a"},
+			steps:        []lkgStreamStep{{chunk: pluginapi.HostModelStreamReadResponse{Payload: data, Done: true}}},
+			wantSuccess:  1,
+			wantFailures: 0,
+			wantStarts:   1,
+			wantLast:     "provider-a",
+		},
+		{
+			name:         "failure before payload records no success",
+			models:       []string{"provider-a"},
+			steps:        []lkgStreamStep{{err: upstreamErr}},
+			wantErr:      true,
+			wantSuccess:  0,
+			wantFailures: 1,
+			wantStarts:   1,
+		},
+		{
+			name:         "failure after payload records no success and does not fall back",
+			models:       []string{"provider-a", "provider-b"},
+			steps:        []lkgStreamStep{{chunk: pluginapi.HostModelStreamReadResponse{Payload: data}}, {err: upstreamErr}},
+			wantErr:      true,
+			wantSuccess:  0,
+			wantFailures: 1,
+			wantStarts:   1,
+		},
+		{
+			name:         "client disconnect on emit records no success",
+			models:       []string{"provider-a", "provider-b"},
+			steps:        []lkgStreamStep{{chunk: pluginapi.HostModelStreamReadResponse{Payload: data, Done: true}}},
+			emitErr:      errors.New("client disconnected"),
+			wantErr:      true,
+			wantSuccess:  0,
+			wantFailures: -1,
+			wantStarts:   1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			route := testModelRoute("smart", routeStrategyLastKnownGood, 30, tc.models...)
+			route.LastKnownGood = defaultLastKnownGoodPolicy()
+			runtime := newRouteRuntime(func() time.Time { return time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC) })
+			runtime.Sync([]modelRoute{route})
+			plugin := &modelRouterPlugin{config: routerConfig{Enabled: true, Routes: []modelRoute{route}}, runtime: runtime}
+			host := &fakeModelHost{}
+			host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+				return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "stream-a"}, nil
+			}
+			next := 0
+			host.read = func(string) (pluginapi.HostModelStreamReadResponse, error) {
+				if next >= len(tc.steps) {
+					return pluginapi.HostModelStreamReadResponse{}, errors.New("unexpected read")
+				}
+				step := tc.steps[next]
+				next++
+				return step.chunk, step.err
+			}
+			if tc.emitErr != nil {
+				host.emit = func(string, []byte) error { return tc.emitErr }
+			}
+			err := plugin.executeStreamWithHost(t.Context(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin-stream", host, nil)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("executeStreamWithHost() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			last, successes, failures := routeObservationSummary(t, runtime, route, "provider-a")
+			if successes != tc.wantSuccess || last != tc.wantLast {
+				t.Fatalf("successes = %d last = %q, want successes %d last %q", successes, last, tc.wantSuccess, tc.wantLast)
+			}
+			if tc.wantFailures >= 0 && failures != tc.wantFailures {
+				t.Fatalf("failures = %d, want %d", failures, tc.wantFailures)
+			}
+			if len(host.startCalls) != tc.wantStarts {
+				t.Fatalf("start calls = %d, want %d", len(host.startCalls), tc.wantStarts)
+			}
+		})
+	}
+}

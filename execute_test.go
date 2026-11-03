@@ -314,6 +314,30 @@ func TestExecuteWithHostAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 	}
 }
 
+func TestExecuteWithHostLastKnownGoodRecordsOnlyHostSuccess(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyLastKnownGood, 30, "a", "b")
+	plugin := testRouterPlugin(route)
+	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Model == "a" {
+			return pluginapi.HostModelExecutionResponse{}, statusError{status: 503, message: "a unavailable"}
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200, Body: []byte(`{}`)}, nil
+	}}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	host.executeCalls = nil
+	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200, Body: []byte(`{}`)}, nil
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatalf("second executeWithHost() error = %v", err)
+	}
+	if len(host.executeCalls) != 1 || host.executeCalls[0].Model != "b" {
+		t.Fatalf("calls after success = %#v, want only b", host.executeCalls)
+	}
+}
+
 func TestCountTokensIsExplicitlyUnsupported(t *testing.T) {
 	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a"))
 	_, err := plugin.CountTokens(t.Context(), pluginapi.ExecutorRequest{Model: "smart"})

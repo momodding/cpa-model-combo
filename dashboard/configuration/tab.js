@@ -1,12 +1,3 @@
-function canonicalIntegerDraft(value){
-  const raw=String(value===undefined||value===null?'':value);
-  const trimmed=raw.trim();
-  return /^-?\d+$/.test(trimmed)?{value:Number.parseInt(trimmed,10)}:{draft:raw};
-}
-function integerDraftValue(value){
-  const draft=canonicalIntegerDraft(value);
-  return Object.prototype.hasOwnProperty.call(draft,'value')?draft.value:Number.NaN;
-}
 function configurationSnapshot(){
   return JSON.stringify({
     enabled:Boolean(state.enabled),
@@ -15,6 +6,9 @@ function configurationSnapshot(){
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
       cooldown_seconds:canonicalIntegerDraft(route.cooldown_seconds),
+      success_rate_threshold:route.success_rate_threshold===undefined?undefined:String(route.success_rate_threshold).trim(),
+      minimum_samples:route.minimum_samples===undefined?undefined:canonicalIntegerDraft(route.minimum_samples),
+      observation_window_minutes:route.observation_window_minutes===undefined?undefined:canonicalIntegerDraft(route.observation_window_minutes),
       targets:(Array.isArray(route.targets)?route.targets:[]).map(target=>({
         model:String(target.model===undefined||target.model===null?'':target.model).trim(),
         weight:canonicalIntegerDraft(target.weight)
@@ -115,7 +109,7 @@ function normalizeModelCatalog(payload,routes){
   payload.data.forEach(item=>{
     const id=item&&typeof item.id==='string'?item.id.trim():'';
     const owner=item&&typeof item.owned_by==='string'?item.owned_by.trim().toLowerCase():'';
-    if(!id||owner==='model-router'||aliases.has(id.toLowerCase())||seen.has(id))return;
+    if(!id||owner==='model-combo'||aliases.has(id.toLowerCase())||seen.has(id))return;
     seen.add(id);
     models.push(id);
   });
@@ -138,22 +132,6 @@ function updateModelStatus(){
     modelStatusEl.removeAttribute('title');
   }
 }
-function normalizeRoute(value,index){
-  const route=value&&typeof value==='object'?value:{};
-  const canonicalCooldown=Number.isInteger(route.cooldown_seconds)?route.cooldown_seconds:null;
-  const legacyCooldown=Number.isInteger(route['cooldown-seconds'])?route['cooldown-seconds']:null;
-  const cooldown=canonicalCooldown!==null?canonicalCooldown:(legacyCooldown!==null?legacyCooldown:60);
-  const targets=Array.isArray(route.targets)?route.targets.map(target=>{
-    const value=target&&typeof target==='object'?target:{};
-    return{model:String(value.model||''),weight:String(Number.isInteger(value.weight)?value.weight:1)};
-  }):(Array.isArray(route.models)?route.models.map(model=>({model:String(model||''),weight:'1'})):[]);
-  return{
-    alias:String(route.alias||('route-'+(index+1))),
-    strategy:route.strategy==='round-robin'?'round-robin':'priority',
-    cooldown_seconds:String(cooldown),
-    targets
-  };
-}
 async function loadConfiguration(){
   setBusy(true);
   setAuthNote('Loading configuration…');
@@ -168,10 +146,10 @@ async function loadConfiguration(){
     ]);
     if(configResult.status==='rejected')throw configResult.reason;
     const config=configResult.value;
-    const source=Array.isArray(config.routes)?config.routes:(Array.isArray(config['model-routes'])?config['model-routes']:[]);
-    state.enabled=config.enabled!==false;
-    state.priority=Number.isInteger(config.priority)?String(config.priority):'0';
-    state.routes=source.map(normalizeRoute);
+    const loaded=configFromResponse(config);
+    state.enabled=loaded.enabled;
+    state.priority=loaded.priority;
+    state.routes=loaded.routes;
     if(catalogResult.status==='fulfilled'){
       try{
         state.availableModels=normalizeModelCatalog(catalogResult.value,state.routes);
@@ -240,6 +218,8 @@ function createRouteCard(route,index){
   card.querySelector('[data-field="alias"]').value=route.alias;
   card.querySelector('[data-field="strategy"]').value=route.strategy;
   card.querySelector('[data-field="cooldown_seconds"]').value=route.cooldown_seconds;
+  card.querySelector('[data-lkg-fields]').hidden=route.strategy!=='last_known_good';
+  for(const key of LKG_KEYS)card.querySelector('[data-field="'+key+'"]').value=route[key]??(route.strategy==='last_known_good'?DEFAULT_LKG[key]:'');
   card.querySelector('[data-action="up"]').disabled=index===0;
   card.querySelector('[data-action="down"]').disabled=index===state.routes.length-1;
   const addTarget=card.querySelector('[data-action="add-target"]');
@@ -406,51 +386,15 @@ routesEl.addEventListener('click',event=>{
   if(action==='target-down'&&targetIndex>=0)moveTarget(index,targetIndex,1,action);
   if(action==='remove-target'&&targetIndex>=0){state.routes[index].targets.splice(targetIndex,1);renderRoutes();refreshDirty()}
 });
-function serializeRoutes(){
-  return state.routes.map(route=>({
-    alias:route.alias.trim(),
-    strategy:route.strategy,
-    cooldown_seconds:integerDraftValue(route.cooldown_seconds),
-    targets:route.targets.map(target=>({model:target.model.trim(),weight:integerDraftValue(target.weight)}))
-  }));
-}
-function baseModel(value){
-  const match=/^(.*)\([^()]+\)$/.exec(value);
-  return (match?match[1]:value).trim().toLowerCase();
-}
+function serializeRoutesFromState(){return serializeRoutes(state.routes)}
 function validateClient(routes){
-  const errors=[];
-  const aliases=new Map();
-  routes.forEach((route,index)=>{
-    const label='Route '+(index+1);
-    const aliasKey=route.alias.toLowerCase();
-    if(!route.alias)errors.push(label+': alias is required.');
-    else if(/\([^()]+\)$/.test(route.alias))errors.push(label+': aliases cannot include a thinking suffix.');
-    else if(aliases.has(aliasKey))errors.push(label+': alias duplicates route '+aliases.get(aliasKey)+'.');
-    else aliases.set(aliasKey,index+1);
-    if(route.strategy!=='priority'&&route.strategy!=='round-robin')errors.push(label+': choose a strategy.');
-    if(!Number.isInteger(route.cooldown_seconds)||route.cooldown_seconds<0)errors.push(label+': cooldown must be a non-negative integer.');
-    if(route.targets.length===0)errors.push(label+': add at least one target.');
-    const models=new Map();
-    route.targets.forEach((target,targetIndex)=>{
-      const model=target.model;
-      const modelKey=model.toLowerCase();
-      if(!model)errors.push(label+', target '+(targetIndex+1)+': model is required.');
-      else if(!Number.isInteger(target.weight)||target.weight<1||target.weight>1000000)errors.push(label+', target '+(targetIndex+1)+': weight must be an integer from 1 to 1000000.');
-      else if(models.has(modelKey))errors.push(label+', target '+(targetIndex+1)+': model duplicates target '+models.get(modelKey)+'.');
-      else models.set(modelKey,targetIndex+1);
-    });
-  });
-  routes.forEach((route,index)=>route.targets.forEach((target,targetIndex)=>{
-    const targetAlias=aliases.get(baseModel(target.model));
-    if(targetAlias)errors.push('Route '+(index+1)+', target '+(targetIndex+1)+': target references route alias '+targetAlias+'.');
-  }));
+  const errors=validateRoutes(routes);
   if(!/^-?\d+$/.test(state.priority.trim()))errors.push('Priority must be an integer.');
   return errors;
 }
 async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
-  const routes=serializeRoutes();
+  const routes=serializeRoutesFromState();
   const errors=validateClient(routes);
   if(errors.length){showToast(errors[0]+(errors.length>1?' '+(errors.length-1)+' more issue(s).':''),'error');return}
   const submittedSnapshot=configurationSnapshot();
@@ -459,9 +403,9 @@ async function saveConfiguration(){
   try{
     await requestManagementJSON(VALIDATE_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,routes})});
     saveStateEl.textContent='Saving…';
-    await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:state.enabled,priority:integerDraftValue(state.priority),routes,'model-routes':null})});
+    await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(configurationPatchBody(state))});
     captureConfigurationBaseline(submittedSnapshot);
-    showToast('Model routes saved and CPA reload requested.','success');
+    showToast('Model routes saved; config changes apply asynchronously.','success');
   }catch(error){
     refreshDirty();
     if(state.dirty)saveStateEl.textContent='Save failed';

@@ -1,10 +1,10 @@
-# CPA Model Router
+# CPA Model Combo
 
-[![test](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/test.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/test.yml)
-[![release](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/release.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-router/actions/workflows/release.yml)
+[![test](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/test.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/test.yml)
+[![release](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/release.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/release.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-CPA Model Router is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-router and executor plugin. It ports the configured model alias, priority routing, round-robin routing, cooldown, and failover behavior from `Z-M-Huang/CLIProxyAPI` into a standalone plugin for upstream CPA.
+CPA Model Combo is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-routing and executor plugin. It ports the configured model alias, priority routing, round-robin routing, cooldown, and failover behavior from `Z-M-Huang/CLIProxyAPI` into a standalone plugin for upstream CPA.
 
 The plugin does not call providers directly. For each selected physical model it calls CPA's host model executor, so CPA keeps control of provider credentials, protocol translation, proxy policy, request logging, and usage capture.
 
@@ -37,7 +37,7 @@ plugins:
   enabled: true
   dir: "/absolute/path/to/plugins"
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       data_path: "/CLIProxyAPI/plugins/model-router.db"
@@ -64,7 +64,7 @@ plugins:
               weight: 1
 ```
 
-`plugins.enabled` and `plugins.configs.model-router.enabled` must both be true. The library basename must be exactly `model-router` with the host extension: `.so`, `.dylib`, or `.dll`.
+`plugins.enabled` and `plugins.configs.model-combo.enabled` must both be true. The library basename must be exactly `model-combo` with the host extension: `.so`, `.dylib`, or `.dll`.
 
 Only two usage-storage settings are supported:
 
@@ -98,7 +98,7 @@ Only run that rollback while the `model-router` plugin is unloaded. The backup i
 
 ### Configuration UI
 
-The plugin registers a **Model Router** page in CPA's management frontend. Open the Plugins section and select **Model Router**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
+The plugin registers a **Model Combo** page in CPA's management frontend. Open the Plugins section and select **Model Combo**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
 
 Model discovery uses the management session to read CPA's configured client API keys, then keeps the first non-empty key in browser memory only while requesting `/v1/models`. The client key is not rendered or stored. If no client key is configured, the page attempts the model request without authorization for CPA installations without frontend authentication. Existing targets that are absent from the live catalog remain visible as disabled `<model> (unavailable)` choices until they are replaced, so loading the page never changes saved routes. New UI targets must be selected from the live catalog; custom or suffixed targets can still be managed through YAML or the Management API.
 
@@ -222,7 +222,7 @@ CPA_SOURCE=../CLIProxyAPI \
 The black-box test builds CPA and the native plugin in a temporary directory, starts logical providers on a local mock OpenAI-compatible server, loads the library through CPA, and verifies all of the following without real provider credentials. Public CI runs it against the minimum supported CPA v7.3.9 commit:
 
 - the logical alias appears in `/v1/models`;
-- the Model Router menu and parser-backed validation endpoint are available;
+- the Model Combo menu and parser-backed validation endpoint are available;
 - a `429` from the first target fails over to the second target;
 - the client sees the requested alias in the response;
 - the failed target remains on cooldown for the next request;
@@ -235,9 +235,8 @@ The test currently runs on Linux and macOS.
 The browser E2E test exercises the dashboard against a disposable local CPA instance. It changes route configuration, pricing, and dashboard preferences, then resets usage history, so do not point it at a shared or production instance. Install its pinned browser dependency with `npm ci`, then run:
 
 ```bash
-DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/model-router/config \
+DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/model-combo/config \
 DASHBOARD_MANAGEMENT_KEY='replace-with-disposable-instance-key' \
-DASHBOARD_E2E_ALLOW_MUTATIONS=1 \
 npm run test:e2e
 ```
 
@@ -246,8 +245,8 @@ Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when Chromium is not available at `/usr/bin
 ### Manual local installation
 
 1. Run `make build` on the CPA host machine.
-2. Copy `dist/model-router.so` on Linux, `dist/model-router.dylib` on macOS, or `dist/model-router.dll` on Windows into the configured `plugins.dir`. CPA also scans `plugins.dir/<goos>/<goarch>`.
-3. Add `plugins.configs.model-router.enabled: true`. Add routes in YAML or through the Model Router management page. Every target model must already be routable by CPA.
+2. Copy `dist/model-combo.so` on Linux, `dist/model-combo.dylib` on macOS, or `dist/model-combo.dll` on Windows into the configured `plugins.dir`. CPA also scans `plugins.dir/<goos>/<goarch>`.
+3. Add `plugins.configs.model-combo.enabled: true`. Add routes in YAML or through the Model Combo management page. Every target model must already be routable by CPA.
 4. Start CPA with `go run ./cmd/server --config /path/to/config.yaml` or your normal CPA binary.
 5. Verify that the alias is listed:
 
@@ -300,7 +299,7 @@ Each zip contains exactly one root-level library named `model-router.so`, `model
 
 To register the plugin publicly:
 
-1. Push this repository to `https://github.com/markhuangai/cpa-plugin-model-router`.
+1. Push this repository to `https://github.com/markhuangai/cpa-plugin-model-combo`.
 2. Create and push a `v<major>.<minor>.<patch>` tag. Confirm the GitHub release contains all five zips plus `checksums.txt`.
 3. Fork `router-for-me/CLIProxyAPI-Plugins-Store` and add this object to `registry.json`:
 
@@ -310,10 +309,10 @@ To register the plugin publicly:
   "name": "Model Router",
   "description": "Adds logical model aliases with priority or round-robin selection, cooldowns, and failover across CPA model targets.",
   "author": "markhuangai",
-  "repository": "https://github.com/markhuangai/cpa-plugin-model-router",
-  "homepage": "https://github.com/markhuangai/cpa-plugin-model-router",
+  "repository": "https://github.com/markhuangai/cpa-plugin-model-combo",
+  "homepage": "https://github.com/markhuangai/cpa-plugin-model-combo",
   "license": "MIT",
-  "tags": ["Router", "Model Router", "Fallback"]
+  "tags": ["Router", "Model Combo", "Fallback"]
 }
 ```
 

@@ -71,6 +71,7 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		p.attribution.MarkRouted(route.Alias, target, request.Headers)
 		receivedPayload, err := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload)
 		if err == nil {
+			p.runtime.MarkSuccess(route, selection.model)
 			return nil
 		}
 		if eligibleRouteFailure(err, policy) {

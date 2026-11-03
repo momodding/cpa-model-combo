@@ -19,6 +19,10 @@ const (
 	maxManagementRequestBytes = 1 << 20
 )
 
+func isModelRouterDashboardPath(path string) bool {
+	return path == modelRouterDashboardPath
+}
+
 type managementRPCRequest struct {
 	pluginapi.ManagementRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -49,7 +53,7 @@ type modelRouterValidationRequest struct {
 func modelRouterManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Router configuration before saving it."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Combo configuration before saving it."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/dashboard", Description: "Read usage summaries and both tables from one snapshot."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/overview", Description: "Read usage summaries, trends, costs, and model breakdowns."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/groups", Description: "Read paginated usage dimension groups."},
@@ -63,7 +67,7 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
-			Menu:        "Model Router",
+			Menu:        "Model Combo",
 			Description: "Configure logical aliases and ordered model target pools.",
 		}},
 	}
@@ -74,8 +78,7 @@ func handleModelRouterManagement(plugin *modelRouterPlugin, request pluginapi.Ma
 	if strings.HasPrefix(path, modelRouterUsageBasePath+"/") {
 		return handleUsageManagement(plugin, path, request)
 	}
-	switch path {
-	case modelRouterDashboardPath:
+	if isModelRouterDashboardPath(request.Path) {
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{
 				"error":   "method_not_allowed",
@@ -99,6 +102,8 @@ func handleModelRouterManagement(plugin *modelRouterPlugin, request pluginapi.Ma
 			},
 			Body: append([]byte(nil), configDashboardHTML...),
 		}
+	}
+	switch path {
 	case modelRouterValidationPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
 			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{

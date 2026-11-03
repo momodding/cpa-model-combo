@@ -129,6 +129,7 @@
 .preview-line { height: 1px; background: var(--line-strong); position: relative; }
 .preview-line::after { content: ""; position: absolute; right: -1px; top: -3px; border: 3px solid transparent; border-left-color: var(--line-strong); }
 .field-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 13px; }
+.field-grid[hidden] { display: none; }
 .field { grid-column: span 4; min-width: 0; }
 .field label, .targets-head strong { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .02em; }
 input[type="text"], input[type="number"], input[type="password"], select {

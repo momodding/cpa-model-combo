@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	pluginID   = "model-router"
-	pluginName = "Model Router"
+	pluginID   = "model-combo"
+	pluginName = "Model Combo"
 )
 
 var pluginVersion = "0.4.2"
@@ -68,7 +68,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 		Name:             pluginName,
 		Version:          pluginVersion,
 		Author:           "markhuangai",
-		GitHubRepository: "https://github.com/markhuangai/cpa-plugin-model-router",
+		GitHubRepository: "https://github.com/markhuangai/cpa-plugin-model-combo",
 		ConfigFields: []pluginapi.ConfigField{
 			{Name: "routes", Type: pluginapi.ConfigFieldTypeArray, Description: "Logical model aliases backed by priority or weighted round-robin target pools."},
 			{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "SQLite usage database path; defaults to model-router.db in the discovered CPA plugins directory."},

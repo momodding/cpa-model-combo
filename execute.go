@@ -52,6 +52,7 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			status = statusFromError(err)
 		}
 		if err == nil && status >= 200 && status < 300 {
+			p.runtime.MarkSuccess(route, selection.model)
 			return pluginapi.ExecutorResponse{
 				Payload: rewriteResponseModel(response.Body, requestedModel),
 				Headers: cloneHeader(response.Headers),

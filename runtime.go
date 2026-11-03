@@ -1,6 +1,9 @@
 package main
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/binary"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -9,13 +12,21 @@ import (
 type routeRuntime struct {
 	mu     sync.Mutex
 	now    func() time.Time
+	rng    *rand.Rand
 	states map[string]*routeState
 }
 
+type routeObservation struct {
+	at      time.Time
+	success bool
+}
+
 type routeState struct {
-	signature string
-	cursor    int64
-	cooldowns map[string]time.Time
+	signature    string
+	cursor       int64
+	cooldowns    map[string]time.Time
+	lastSuccess  string
+	observations map[string][]routeObservation
 }
 
 type routeSelection struct {
@@ -28,7 +39,27 @@ func newRouteRuntime(now func() time.Time) *routeRuntime {
 	if now == nil {
 		now = time.Now
 	}
-	return &routeRuntime{now: now, states: make(map[string]*routeState)}
+	seed1, seed2 := runtimeSeeds(now)
+	return newRouteRuntimeWithRNG(now, rand.New(rand.NewPCG(seed1, seed2)))
+}
+
+func runtimeSeeds(now func() time.Time) (uint64, uint64) {
+	var bytes [16]byte
+	if _, err := cryptorand.Read(bytes[:]); err == nil {
+		return binary.LittleEndian.Uint64(bytes[:8]), binary.LittleEndian.Uint64(bytes[8:])
+	}
+	seed := uint64(now().UnixNano())
+	return seed, seed ^ 0x9e3779b97f4a7c15
+}
+
+func newRouteRuntimeWithRNG(now func() time.Time, rng *rand.Rand) *routeRuntime {
+	if now == nil {
+		now = time.Now
+	}
+	if rng == nil {
+		rng = rand.New(rand.NewPCG(1, 2))
+	}
+	return &routeRuntime{now: now, rng: rng, states: make(map[string]*routeState)}
 }
 
 func (runtime *routeRuntime) Sync(routes []modelRoute) {
@@ -43,7 +74,7 @@ func (runtime *routeRuntime) Sync(routes []modelRoute) {
 		signature := routeSignature(route)
 		state := runtime.states[key]
 		if state == nil || state.signature != signature {
-			state = &routeState{signature: signature, cooldowns: make(map[string]time.Time)}
+			state = &routeState{signature: signature, cooldowns: make(map[string]time.Time), observations: make(map[string][]routeObservation)}
 		}
 		next[key] = state
 	}
@@ -58,14 +89,18 @@ func (runtime *routeRuntime) Clone(routes []modelRoute) *routeRuntime {
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	cloned := newRouteRuntime(runtime.now)
+	cloned := newRouteRuntimeWithRNG(runtime.now, rand.New(rand.NewPCG(runtime.rng.Uint64(), runtime.rng.Uint64())))
 	for _, route := range routes {
 		key := routeKey(route.Alias)
 		signature := routeSignature(route)
 		old := runtime.states[key]
-		state := &routeState{signature: signature, cooldowns: make(map[string]time.Time)}
+		state := &routeState{signature: signature, cooldowns: make(map[string]time.Time), observations: make(map[string][]routeObservation)}
 		if old != nil && old.signature == signature {
 			state.cursor = old.cursor
+			state.lastSuccess = old.lastSuccess
+			for model, observations := range old.observations {
+				state.observations[model] = append([]routeObservation(nil), observations...)
+			}
 			for model, until := range old.cooldowns {
 				state.cooldowns[model] = until
 			}
@@ -90,8 +125,39 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 		return routeSelection{}
 	}
 	now := runtime.now()
+	var eligible []string
 	var earliest time.Time
-	if route.Strategy != routeStrategyRoundRobin {
+	if route.Strategy == routeStrategyRandom || route.Strategy == routeStrategyLastKnownGood {
+		for _, target := range route.Targets {
+			model := strings.TrimSpace(target.Model)
+			if _, skip := excluded[routeKey(model)]; skip {
+				continue
+			}
+			until := state.cooldowns[routeKey(model)]
+			if until.IsZero() || !now.Before(until) {
+				eligible = append(eligible, model)
+			} else if earliest.IsZero() || until.Before(earliest) {
+				earliest = until
+			}
+		}
+		if len(eligible) > 0 {
+			if route.Strategy == routeStrategyRandom {
+				return routeSelection{model: eligible[runtime.rng.IntN(len(eligible))]}
+			}
+			bestModel := ""
+			bestRate := float64(-1)
+			for _, model := range eligible {
+				rate, qualified := lastKnownGoodRate(route, state, model, now)
+				if qualified && (bestModel == "" || rate > bestRate) {
+					bestModel, bestRate = model, rate
+				}
+			}
+			if bestModel != "" {
+				return routeSelection{model: bestModel}
+			}
+			return routeSelection{model: eligible[0]}
+		}
+	} else if route.Strategy != routeStrategyRoundRobin {
 		for _, target := range route.Targets {
 			model := strings.TrimSpace(target.Model)
 			if _, skip := excluded[routeKey(model)]; skip {
@@ -160,9 +226,12 @@ func (runtime *routeRuntime) MarkFailure(route modelRoute, model string) {
 	state := runtime.stateLocked(route)
 	if state != nil {
 		state.cooldowns[routeKey(model)] = runtime.now().Add(cooldown)
+		now := runtime.now()
+		model = strings.TrimSpace(model)
+		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now})
 	}
-}
 
+}
 func (runtime *routeRuntime) stateLocked(route modelRoute) *routeState {
 	key := routeKey(route.Alias)
 	if key == "" {
@@ -174,7 +243,7 @@ func (runtime *routeRuntime) stateLocked(route modelRoute) *routeState {
 	signature := routeSignature(route)
 	state := runtime.states[key]
 	if state == nil || state.signature != signature {
-		state = &routeState{signature: signature, cooldowns: make(map[string]time.Time)}
+		state = &routeState{signature: signature, cooldowns: make(map[string]time.Time), observations: make(map[string][]routeObservation)}
 		runtime.states[key] = state
 	}
 	return state
@@ -205,4 +274,49 @@ func weightedTargetAt(targets []modelTarget, slot int64) (int, int64) {
 		offset += weight
 	}
 	return 0, 0
+}
+
+func lastKnownGoodRate(route modelRoute, state *routeState, model string, now time.Time) (float64, bool) {
+	obs := pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes)
+	state.observations[model] = obs
+	if len(obs) < route.LastKnownGood.MinimumSamples {
+		return 0, false
+	}
+	successes := 0
+	for _, item := range obs {
+		if item.success {
+			successes++
+		}
+	}
+	rate := float64(successes) / float64(len(obs))
+	return rate, rate >= route.LastKnownGood.SuccessRateThreshold
+}
+
+func qualifiesLastKnownGood(route modelRoute, state *routeState, model string, now time.Time) bool {
+	_, qualified := lastKnownGoodRate(route, state, model, now)
+	return qualified
+}
+
+func pruneObservations(obs []routeObservation, now time.Time, minutes int) []routeObservation {
+	cutoff := now.Add(-time.Duration(minutes) * time.Minute)
+	first := 0
+	for first < len(obs) && obs[first].at.Before(cutoff) {
+		first++
+	}
+	return obs[first:]
+}
+
+func (runtime *routeRuntime) MarkSuccess(route modelRoute, model string) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state != nil {
+		if state.observations == nil {
+			state.observations = make(map[string][]routeObservation)
+		}
+		model = strings.TrimSpace(model)
+		state.lastSuccess = model
+		now := runtime.now()
+		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now, success: true})
+	}
 }

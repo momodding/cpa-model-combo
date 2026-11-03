@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math/rand/v2"
+	"sync"
 	"testing"
 	"time"
 )
@@ -169,4 +171,220 @@ func TestRouteRuntimeClonePreservesOnlyUnchangedRoutes(t *testing.T) {
 	if selected := changed.Select(changedRoute); selected.model != "a" {
 		t.Fatalf("changed clone selection = %#v", selected)
 	}
+}
+
+type constSource struct{ value uint64 }
+
+func (source constSource) Uint64() uint64 { return source.value }
+
+func TestRouteRuntimeRandomSkipsExcludedAndCoolingTargets(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	route := testModelRoute("smart", routeStrategyRandom, 30, "a", "b", "c", "d")
+	excluded := map[string]struct{}{routeKey("a"): {}}
+	newRuntime := func(source rand.Source) *routeRuntime {
+		runtime := newRouteRuntimeWithRNG(clock, rand.New(source))
+		runtime.Sync([]modelRoute{route})
+		runtime.MarkFailure(route, "d")
+		return runtime
+	}
+	// Eligible after exclusion and cooldown: [b, c]. Max draw picks last, zero draw picks first.
+	if selected := newRuntime(constSource{value: ^uint64(0)}).SelectExcluding(route, excluded); selected.model != "c" {
+		t.Fatalf("max draw selection = %#v, want c", selected)
+	}
+	if selected := newRuntime(constSource{value: 0}).SelectExcluding(route, excluded); selected.model != "b" {
+		t.Fatalf("zero draw selection = %#v, want b", selected)
+	}
+	seeded := newRuntime(rand.NewPCG(7, 9))
+	seen := map[string]int{}
+	for range 200 {
+		seen[seeded.SelectExcluding(route, excluded).model]++
+	}
+	if seen["a"] != 0 || seen["d"] != 0 || seen["b"] == 0 || seen["c"] == 0 {
+		t.Fatalf("seeded selections = %#v, want only b and c", seen)
+	}
+}
+
+func TestRouteRuntimeRandomIgnoresWeights(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	route := modelRoute{
+		Alias:           "smart",
+		Strategy:        routeStrategyRandom,
+		CooldownSeconds: 30,
+		Targets: []modelTarget{
+			{Model: "light", Weight: 1},
+			{Model: "heavy", Weight: 100},
+		},
+	}
+	runtime := newRouteRuntimeWithRNG(func() time.Time { return now }, rand.New(rand.NewPCG(3, 5)))
+	runtime.Sync([]modelRoute{route})
+	counts := map[string]int{}
+	for range 400 {
+		counts[runtime.Select(route).model]++
+	}
+	if counts["light"] < 100 || counts["heavy"] == 0 {
+		t.Fatalf("selection counts = %#v; weight 100 must not dominate", counts)
+	}
+}
+
+func TestRouteRuntimeRandomSeededSequenceIsReproducible(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	route := testModelRoute("smart", routeStrategyRandom, 30, "a", "b", "c")
+	first := newRouteRuntimeWithRNG(clock, rand.New(rand.NewPCG(11, 13)))
+	second := newRouteRuntimeWithRNG(clock, rand.New(rand.NewPCG(11, 13)))
+	first.Sync([]modelRoute{route})
+	second.Sync([]modelRoute{route})
+	for index := range 50 {
+		got, want := first.Select(route).model, second.Select(route).model
+		if got != want {
+			t.Fatalf("draw %d: %q != %q", index, got, want)
+		}
+	}
+}
+
+func TestRouteRuntimeLastKnownGoodPrefersLastSuccess(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	runtime := newRouteRuntime(func() time.Time { return now })
+	route := testModelRoute("smart", routeStrategyLastKnownGood, 30, "a", "b")
+	runtime.Sync([]modelRoute{route})
+	if selected := runtime.Select(route); selected.model != "a" {
+		t.Fatalf("selection before any success = %#v, want a", selected)
+	}
+	runtime.MarkSuccess(route, "b")
+	for index := range 3 {
+		if selected := runtime.Select(route); selected.model != "b" {
+			t.Fatalf("selection %d after success = %#v, want b", index, selected)
+		}
+	}
+}
+
+func TestRouteRuntimeLastKnownGoodFallsBackToPriority(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	runtime := newRouteRuntime(func() time.Time { return now })
+	route := testModelRoute("smart", routeStrategyLastKnownGood, 30, "a", "b", "c")
+	route.LastKnownGood = lastKnownGoodPolicy{SuccessRateThreshold: 0.5, MinimumSamples: 1, ObservationWindowMinutes: 60}
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "b")
+	runtime.MarkFailure(route, "b")
+	if selected := runtime.Select(route); selected.model != "a" {
+		t.Fatalf("selection with cooling last success = %#v, want a", selected)
+	}
+	excluded := map[string]struct{}{routeKey("b"): {}}
+	if selected := runtime.SelectExcluding(route, excluded); selected.model != "a" {
+		t.Fatalf("selection with excluded last success = %#v, want a", selected)
+	}
+	now = now.Add(31 * time.Second)
+	if selected := runtime.Select(route); selected.model != "b" {
+		t.Fatalf("selection after cooldown = %#v, want restored last success b", selected)
+	}
+}
+
+func TestRouteRuntimeCloneKeepsLastKnownGoodOnlyForSameSignature(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyLastKnownGood, 30, "a", "b")
+	route.LastKnownGood = lastKnownGoodPolicy{SuccessRateThreshold: 0.5, MinimumSamples: 1, ObservationWindowMinutes: 60}
+	runtime := newRouteRuntime(nil)
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "b")
+
+	unchanged := runtime.Clone([]modelRoute{route})
+	if selected := unchanged.Select(route); selected.model != "b" {
+		t.Fatalf("unchanged clone selection = %#v, want b", selected)
+	}
+	changed := route
+	changed.Targets = []modelTarget{{Model: "a", Weight: defaultTargetWeight}, {Model: "c", Weight: defaultTargetWeight}}
+	reset := runtime.Clone([]modelRoute{changed})
+	if selected := reset.Select(changed); selected.model != "a" {
+		t.Fatalf("changed clone selection = %#v, want a", selected)
+	}
+}
+
+func TestRouteRuntimeClonePreservesObservations(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	route := testModelRoute("lkg", routeStrategyLastKnownGood, 30, "a", "b")
+	route.LastKnownGood.MinimumSamples = 1
+	route.LastKnownGood.SuccessRateThreshold = 1
+	runtime := newRouteRuntime(func() time.Time { return now })
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "b")
+	clone := runtime.Clone([]modelRoute{route})
+	if selected := clone.Select(route); selected.model != "b" {
+		t.Fatalf("clone selection = %#v, want b", selected)
+	}
+}
+
+func TestRouteRuntimeLastKnownGoodChoosesHigherRate(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	route := testModelRoute("lkg", routeStrategyLastKnownGood, 30, "early", "late")
+	route.LastKnownGood.MinimumSamples = 2
+	route.LastKnownGood.SuccessRateThreshold = 0.5
+	runtime := newRouteRuntime(func() time.Time { return now })
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "early")
+	runtime.MarkFailure(route, "early")
+	runtime.MarkSuccess(route, "late")
+	runtime.MarkSuccess(route, "late")
+	if selected := runtime.Select(route); selected.model != "late" {
+		t.Fatalf("selection = %#v, want late", selected)
+	}
+}
+
+func TestRouteRuntimeLastKnownGoodQualifiesAtMinimumSamplesAndThreshold(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	route := testModelRoute("lkg", routeStrategyLastKnownGood, 30, "a", "b")
+	route.LastKnownGood = lastKnownGoodPolicy{SuccessRateThreshold: 0.5, MinimumSamples: 2, ObservationWindowMinutes: 60}
+	runtime := newRouteRuntime(func() time.Time { return now })
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "b")
+	if selected := runtime.Select(route); selected.model != "a" {
+		t.Fatalf("selection with one sample = %#v, want priority a", selected)
+	}
+	runtime.MarkFailure(route, "b")
+	now = now.Add(31 * time.Second)
+	if selected := runtime.Select(route); selected.model != "b" {
+		t.Fatalf("selection at MinimumSamples with rate == threshold = %#v, want b", selected)
+	}
+}
+
+func TestRouteRuntimeLastKnownGoodPrunesStaleObservations(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	route := testModelRoute("lkg", routeStrategyLastKnownGood, 30, "a", "b")
+	route.LastKnownGood = lastKnownGoodPolicy{SuccessRateThreshold: 0.5, MinimumSamples: 1, ObservationWindowMinutes: 60}
+	runtime := newRouteRuntime(func() time.Time { return now })
+	runtime.Sync([]modelRoute{route})
+	runtime.MarkSuccess(route, "b")
+	if selected := runtime.Select(route); selected.model != "b" {
+		t.Fatalf("selection with fresh success = %#v, want b", selected)
+	}
+	now = now.Add(61 * time.Minute)
+	if selected := runtime.Select(route); selected.model != "a" {
+		t.Fatalf("selection after observation window = %#v, want priority a", selected)
+	}
+}
+
+func TestRouteRuntimeRandomCloneConcurrentSelect(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyRandom, 30, "a", "b", "c")
+	base := newRouteRuntimeWithRNG(nil, rand.New(rand.NewPCG(7, 11)))
+	base.Sync([]modelRoute{route})
+	valid := map[string]bool{"a": true, "b": true, "c": true}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				clone := base.Clone([]modelRoute{route})
+				if clone.rng == base.rng {
+					t.Error("clone shares RNG with base runtime")
+				}
+				if selected := clone.Select(route); !valid[selected.model] {
+					t.Errorf("clone selection = %#v", selected)
+				}
+				if selected := base.Select(route); !valid[selected.model] {
+					t.Errorf("base selection = %#v", selected)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

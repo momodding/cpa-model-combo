@@ -70,7 +70,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 		workingCalls.Add(1)
 		if body.Stream {
 			response.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprintf(response, "data: {\"id\":\"model-router-smoke-stream\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"upstream=%s\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n", body.Model, body.Model)
+			_, _ = fmt.Fprintf(response, "data: {\"id\":\"model-combo-smoke-stream\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"upstream=%s\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n", body.Model, body.Model)
 			_, _ = io.WriteString(response, "data: [DONE]\n\n")
 			return
 		}
@@ -84,7 +84,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 			}
 		}
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"id":      "model-router-smoke",
+			"id":      "model-combo-smoke",
 			"object":  "chat.completion",
 			"created": 1,
 			"model":   body.Model,
@@ -107,7 +107,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pluginPath := filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())
+	pluginPath := filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginPath, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -128,7 +128,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       retention_days: 45
@@ -477,7 +477,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 `, name, prefix, provider.URL+"/v1", key)
 	}
 	workDir := t.TempDir()
-	pluginArtifact := filepath.Join(workDir, "model-router"+sharedLibraryExtension())
+	pluginArtifact := filepath.Join(workDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginArtifact, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -488,7 +488,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 			if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())); err != nil {
+			if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())); err != nil {
 				t.Fatalf("link plugin for %s: %v", scenario.name, err)
 			}
 			port := reserveLocalPort(t)
@@ -503,7 +503,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       fallback: {%s}
@@ -632,7 +632,7 @@ func TestModelRouterResponsesSSEFramingWithCLIProxyAPI(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pluginPath := filepath.Join(pluginsDir, "model-router"+sharedLibraryExtension())
+	pluginPath := filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginPath, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -649,7 +649,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-router:
+    model-combo:
       enabled: true
       priority: 100
       routes:
@@ -759,7 +759,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Router</title>") {
+	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Combo</title>") {
 		t.Fatalf("dashboard status=%s body=%q", resourceResponse.Status, resourceBody)
 	}
 	for _, expected := range []string{"/v0/management/api-keys", "/v1/models", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {

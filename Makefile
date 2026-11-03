@@ -1,4 +1,4 @@
-PLUGIN_ID := model-router
+PLUGIN_ID := model-combo
 VERSION ?= 0.4.2
 GOOS := $(shell go env GOOS)
 

@@ -254,7 +254,7 @@ func handleModelRouterABIMethod(ctx context.Context, method string, request []by
 		_, err := plugin.CountTokens(ctx, pluginapi.ExecutorRequest{})
 		return errorForExecution(err, "model_route_count_tokens_unsupported"), nil
 	case pluginabi.MethodExecutorHTTPRequest:
-		return errorEnvelope("unsupported_method", "executor.http_request is not supported by model-router", 0), nil
+		return errorEnvelope("unsupported_method", "executor.http_request is not supported by model-combo", 0), nil
 	case pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter:
 		var rpcRequest pluginapi.RequestInterceptRequest
 		if err := json.Unmarshal(request, &rpcRequest); err != nil {

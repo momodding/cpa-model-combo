@@ -69,8 +69,10 @@ func (store *usageStore) Reconfigure(path string, retentionDays int) error {
 	store.mu.RUnlock()
 	if samePath {
 		store.mu.Lock()
-		store.retentionDays = retentionDays
 		err := pruneSQLiteDatabase(store.db, retentionDays, time.Now().UTC(), true)
+		if err == nil {
+			store.retentionDays = retentionDays
+		}
 		store.mu.Unlock()
 		if err != nil {
 			store.recordError(err)
