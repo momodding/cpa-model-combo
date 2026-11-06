@@ -31,8 +31,11 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	bodyInfo := bodyForExecution(request)
 	policy := p.config.fallbackPolicy()
 	var lastErr error
+	var lastTarget string
+	lastStatus := 0
 	attempted := make(map[string]struct{}, len(route.Targets))
-	for attempt := 0; attempt < len(route.Targets); attempt++ {
+	limit := p.config.attemptLimit(len(route.Targets))
+	for attempt := 0; attempt < limit; attempt++ {
 		selection := p.runtime.SelectExcluding(route, attempted)
 		if selection.allCooling {
 			return pluginapi.ExecutorResponse{}, cooldownRouteError(route, selection.retryAfter)
@@ -53,23 +56,31 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		}
 		if err == nil && status >= 200 && status < 300 {
 			p.runtime.MarkSuccess(route, selection.model)
+			metadata := map[string]any{
+				"route_alias":    route.Alias,
+				"selected_model": target,
+				"selected_index": attempt,
+			}
+			if lastTarget != "" {
+				metadata["fallback_attempt"] = attempt
+				metadata["fallback_from"] = lastTarget
+				metadata["fallback_reason"] = fallbackReason(lastStatus, lastErr)
+			}
 			return pluginapi.ExecutorResponse{
-				Payload: rewriteResponseModel(response.Body, requestedModel),
-				Headers: cloneHeader(response.Headers),
-				Metadata: map[string]any{
-					"route_alias":    route.Alias,
-					"selected_model": target,
-					"selected_index": attempt,
-				},
+				Payload:  rewriteResponseModel(response.Body, requestedModel),
+				Headers:  cloneHeader(response.Headers),
+				Metadata: metadata,
 			}, nil
 		}
 		if err == nil {
 			err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
 		}
-		if !eligibleRouteFailure(err, policy) {
+		if !eligibleRouteFailure(err, policy) || p.config.FallbackDisabled {
 			return pluginapi.ExecutorResponse{}, err
 		}
 		lastErr = err
+		lastTarget = target
+		lastStatus = status
 		p.runtime.MarkFailure(route, selection.model)
 	}
 	detail := ""
@@ -110,4 +121,16 @@ func cooldownRouteError(route modelRoute, retryAfter time.Duration) error {
 		seconds = 1
 	}
 	return newRouteError(http.StatusTooManyRequests, "model_route_cooldown", route.Alias, fmt.Sprintf("all candidates for model route %q are cooling down", route.Alias), fmt.Sprintf("retry after %d seconds", seconds))
+}
+
+// fallbackReason describes why the prior target was skipped. Only status and error code are exposed, never bodies.
+func fallbackReason(status int, err error) string {
+	code := ""
+	if err != nil {
+		code = codeFromError(err, "")
+	}
+	if code != "" {
+		return fmt.Sprintf("%d %s", status, code)
+	}
+	return fmt.Sprintf("%d", status)
 }
