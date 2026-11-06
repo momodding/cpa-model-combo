@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,6 +56,7 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	}
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
+	routerRequestID := rand.Text()
 	policy := p.config.fallbackPolicy()
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
@@ -69,7 +71,7 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers)
+		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
 		receivedPayload, err := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload)
 		if err == nil {
 			p.runtime.MarkSuccess(route, selection.model)

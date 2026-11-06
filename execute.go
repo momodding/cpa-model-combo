@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"math"
 	"net/http"
@@ -29,6 +30,7 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	}
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
+	routerRequestID := rand.Text()
 	policy := p.config.fallbackPolicy()
 	var lastErr error
 	var lastTarget string
@@ -45,7 +47,7 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers)
+		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
 		response, err := host.Execute(hostRequest(request, bodyInfo, target, false))
 		status := response.StatusCode
 		if status == 0 && err == nil {
