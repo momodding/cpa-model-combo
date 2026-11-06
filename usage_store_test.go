@@ -1570,3 +1570,36 @@ func TestAggregateRequestAttempts(t *testing.T) {
 		t.Fatalf("aggregate cost = %#v", got.cost)
 	}
 }
+
+func TestUsageRequestsGroupsCorrelatedRouterAttempts(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	for _, record := range []storedUsageRecord{
+		{RequestedAt: now, Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 0, ProviderModel: "first", Source: "fallback", Failed: true, StatusCode: 429, InputTokens: 2, OutputTokens: 3, TotalTokens: 5, LatencyNS: uint64(time.Second)},
+		{RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 1, ProviderModel: "second", Source: "winner", StatusCode: 200, InputTokens: 7, OutputTokens: 11, TotalTokens: 18, LatencyNS: uint64(2 * time.Second)},
+		{RequestedAt: now.Add(2 * time.Second), Attribution: attributionRouted, RouterModel: "smart", ProviderModel: "legacy", Source: "legacy", StatusCode: 200, TotalTokens: 1},
+	} {
+		if err := store.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 2 || page.Items[0].ProviderModel != "second" || page.Items[0].Source != "" || page.Items[0].TotalTokens != 23 || len(page.Items[0].Attempts) != 2 || page.Items[0].Attempts[0].ProviderModel != "first" || page.Items[0].Attempts[1].ProviderModel != "second" || page.Items[1].ProviderModel != "legacy" || len(page.Items[1].Attempts) != 0 {
+		t.Fatalf("logical page = %#v", page)
+	}
+	filtered, err := store.Requests(usageFilter{ProviderModel: "first", Source: "fallback"}, "time", "asc", 0, 10)
+	if err != nil || filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].RouterRequestID != "request-1" || len(filtered.Items[0].Attempts) != 2 {
+		t.Fatalf("attempt filter = %#v, %v", filtered, err)
+	}
+	paged, err := store.Requests(usageFilter{}, "time", "asc", 1, 1)
+	if err != nil || paged.Total != 2 || len(paged.Items) != 1 || paged.Items[0].ProviderModel != "legacy" {
+		t.Fatalf("logical pagination = %#v, %v", paged, err)
+	}
+}
