@@ -1,10 +1,10 @@
 # Configuration migration
 
-Use canonical Model Router identity for configuration, artifacts, and dashboard links.
+Use canonical `cpa-model-combo` identity for configuration, artifacts, and dashboard links.
 
-- Plugin identity: `model-router`.
-- Artifacts: `model-router.dylib`, `model-router.so`, or `model-router.dll`.
-- Dashboard resource: `/v0/resource/plugins/model-router/config`.
+- Plugin identity: `cpa-model-combo`.
+- Artifacts: `cpa-model-combo.dylib`, `cpa-model-combo.so`, or `cpa-model-combo.dll`.
+- Dashboard resource: `/v0/resource/plugins/cpa-model-combo/config`.
 
 CPA v8.0.4 compatibility is unverified. Do not treat this guide as support confirmation for that version.
 
@@ -50,8 +50,8 @@ Unknown fields fail configuration decoding. This prevents silently ignored missp
 1. Back up deployed configuration and existing plugin artifact.
 2. Convert account-aware settings into explicit `routes` and `targets`.
 3. Validate configuration on one compatible host before fleet deployment.
-4. Install only matching `model-router` artifact for host operating system.
-5. Confirm dashboard reads `/v0/resource/plugins/model-router/config`.
+4. Install only matching `cpa-model-combo` artifact for host operating system.
+5. Confirm dashboard reads `/v0/resource/plugins/cpa-model-combo/config`.
 6. Upgrade remaining hosts after canary routing behaves as expected.
 7. Roll back by restoring previous artifact and backed-up configuration together.
 

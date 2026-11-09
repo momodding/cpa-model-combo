@@ -94,7 +94,7 @@ The fixed **Save changes** and **Discard and reload** dock slides into view only
 **Save changes** checks duplicate aliases, recursive routes, empty pools, duplicate targets, and cooldown values with the plugin's Go configuration parser before applying a shallow patch through CPA. The patch updates `enabled`, `priority`, and `routes` without replacing plugin-store metadata or unrelated config fields. The same page is available directly at:
 
 ```text
-/v0/resource/plugins/model-router/config
+/v0/resource/plugins/cpa-model-combo/config
 ```
 
 The dashboard's shared, Configuration, and Usage tracking source lives under dashboard/; Go embeds these files in the plugin and assembles one HTML response when the plugin starts. CPA exposes that page as a public plugin resource so it can embed it in the frontend. Reading or changing configuration still requires the management key. The page reads CPAMC's persisted `cli-proxy-auth` value from same-origin browser storage; it does not change CPAMC's stored session. If **Remember password** is disabled, the persisted session has no key, so the page reveals a fallback key field. A fallback key is cached only in that tab's session storage and is removed when CPA rejects it. CPA's Management API must be enabled and reachable from the browser.
@@ -164,7 +164,7 @@ plugins:
   enabled: true
   dir: "plugins"
   configs:
-    model-router:
+    cpa-model-combo:
       enabled: true
       routes:
         - alias: auto
@@ -182,10 +182,10 @@ For staged migration, the plugin accepts `model-routes` instead of `routes` and 
 The fork-specific `/v0/management/model-routes` endpoints are not part of this plugin. The configuration page uses CPA's generic plugin endpoints, which remain available for automation:
 
 ```text
-GET   /v0/management/plugins/model-router/config
-PUT   /v0/management/plugins/model-router/config
-PATCH /v0/management/plugins/model-router/config
-PATCH /v0/management/plugins/model-router/enabled
+GET   /v0/management/plugins/cpa-model-combo/config
+PUT   /v0/management/plugins/cpa-model-combo/config
+PATCH /v0/management/plugins/cpa-model-combo/config
+PATCH /v0/management/plugins/cpa-model-combo/enabled
 ```
 
 ## Build And Test
@@ -197,7 +197,7 @@ make check
 make build
 ```
 
-`make build` writes the host-platform library to `dist/model-router.<ext>`. The default suite covers strict config parsing, priority and round-robin state, reconfiguration, failure classification, header sanitization, model rewriting, non-stream failover, stream boundaries, CPA usage attribution, persistence, pricing, management endpoints, the management page, and native RPC registration.
+`make build` writes the host-platform library to `dist/cpa-model-combo.<ext>`. The default suite covers strict config parsing, priority and round-robin state, reconfiguration, failure classification, header sanitization, model rewriting, non-stream failover, stream boundaries, CPA usage attribution, persistence, pricing, management endpoints, the management page, and native RPC registration.
 
 Run the opt-in black-box test against a local CPA source checkout:
 

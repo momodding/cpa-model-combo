@@ -68,7 +68,7 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
-		Menu:        "cpa-model-combo",
+			Menu:        "cpa-model-combo",
 			Description: "Configure logical aliases and ordered model target pools.",
 		}},
 	}

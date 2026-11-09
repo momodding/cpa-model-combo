@@ -2,7 +2,7 @@
 
 ## 1. Scope and evidence rules
 
-This procedure verifies routing-only behavior of `model-router` inside a user-managed CLIProxyAPI (CPA) host.
+This procedure verifies routing-only behavior of `cpa-model-combo` inside a user-managed CLIProxyAPI (CPA) host.
 
 It excludes accounts, OAuth, credentials, provider setup, usage, pricing, and production deployment.
 
@@ -23,7 +23,7 @@ The host must support native plugins, `model_router`, `executor`, `model_registr
 Current local artifact evidence covers macOS amd64 only:
 
 ```text
-dist/model-router.dylib: Mach-O 64-bit dynamically linked shared library x86_64
+dist/cpa-model-combo.dylib: Mach-O 64-bit dynamically linked shared library x86_64
 ```
 
 Linux `.so` and Windows `.dll` artifacts require native builds on matching targets. No Linux or Windows support claim is made here.
@@ -34,8 +34,8 @@ From repository root, run:
 
 ```sh
 make build
-file dist/model-router.dylib
-nm -gU dist/model-router.dylib | grep -E '(_cliproxy_plugin_init|_ModelRouterPlugin(Call|Free|Shutdown))'
+file dist/cpa-model-combo.dylib
+nm -gU dist/cpa-model-combo.dylib | grep -E '(_cliproxy_plugin_init|_ModelRouterPlugin(Call|Free|Shutdown))'
 ```
 
 Expected macOS exports are:
@@ -61,14 +61,14 @@ A macOS deployment-target linker warning is non-fatal only when build commands s
 
 ## 4. Filename and plugin ID
 
-Use canonical plugin ID `model-router`.
+Use canonical plugin ID `cpa-model-combo`.
 
 Use the host-native extension and preserve the basename:
 
 ```text
-macOS:  model-router.dylib
-Linux:  model-router.so
-Windows: model-router.dll
+macOS:  cpa-model-combo.dylib
+Linux:  cpa-model-combo.so
+Windows: cpa-model-combo.dll
 ```
 
 Do not rename the basename. Do not add a version suffix. CPA derives plugin ID from filename.
@@ -83,7 +83,7 @@ export CPA_ROOT="$(mktemp -d)"
 export CPA_CONFIG="$CPA_ROOT/config.yaml"
 export PLUGIN_DIR="$CPA_ROOT/plugins"
 mkdir -p "$PLUGIN_DIR"
-cp dist/model-router.dylib "$PLUGIN_DIR/model-router.dylib"
+cp dist/cpa-model-combo.dylib "$PLUGIN_DIR/cpa-model-combo.dylib"
 ```
 
 Create `$CPA_CONFIG` with an absolute plugin directory and routing-only configuration:
@@ -97,10 +97,10 @@ plugins:
   enabled: true
   dir: "/absolute/path/to/disposable-root/plugins"
   configs:
-    model-router:
+    cpa-model-combo:
       enabled: true
       priority: 100
-      data_path: "/absolute/path/to/disposable-root/model-router.db"
+      data_path: "/absolute/path/to/disposable-root/cpa-model-combo.db"
       routes:
         - alias: auto
           strategy: priority
@@ -153,7 +153,7 @@ Check canonical plugin resource route:
 
 ```sh
 curl -sS -D "$CPA_ROOT/resource.headers" -o "$CPA_ROOT/resource.body" \
-  http://127.0.0.1:18317/v0/resource/plugins/model-router/config
+  http://127.0.0.1:18317/v0/resource/plugins/cpa-model-combo/config
 awk 'NR == 1 || tolower($0) ~ /^content-type:/' "$CPA_ROOT/resource.headers"
 wc -c < "$CPA_ROOT/resource.body"
 ```
@@ -168,7 +168,7 @@ Open this URL in user browser only after CPA is ready:
 http://127.0.0.1:18317/
 ```
 
-Verify model-router route configuration appears in dashboard. Verify route strategy, targets, weights, cooldown, save, and reload behavior.
+Verify cpa-model-combo route configuration appears in dashboard. Verify route strategy, targets, weights, cooldown, save, and reload
 
 Management routes are protected when configured with a management secret. Test only with a safe disposable secret supplied by user. Do not discover, read, or reuse real secrets.
 
@@ -237,11 +237,11 @@ Known limitations:
 
 ### Troubleshooting
 
-- **Plugin not discovered:** verify `plugins.enabled`, absolute `plugins.dir`, exact `model-router` basename, and host-native extension.
+- **Plugin not discovered:** verify `plugins.enabled`, absolute `plugins.dir`, exact `cpa-model-combo` basename, and host-native extension.
 - **Wrong architecture:** rebuild on same OS and CPU architecture as CPA.
 - **Missing exports:** rerun `nm` and verify all four required exports.
 - **Readiness timeout:** preserve `$CPA_ROOT/cpa.log`; check port ownership and configuration syntax.
-- **Alias absent:** verify `model-router` config is enabled and registration logs contain no errors.
+- **Alias absent:** verify `cpa-model-combo` config is enabled and registration logs contain no errors.
 - **Dashboard route absent:** verify dashboard URL, plugin registration, and disposable config path.
 - **Management rejection:** confirm disposable management secret and route protection; do not weaken real configuration.
 - **Stream retry mismatch:** record whether first upstream payload already arrived; retries after commitment are not expected.

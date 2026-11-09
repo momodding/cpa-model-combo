@@ -32,28 +32,28 @@ The feature intentionally does not include:
 ```yaml
 plugins:
   configs:
-    model-router:
+    cpa-model-combo:
       enabled: true
-      data_path: "/CLIProxyAPI/plugins/model-router.db"
+      data_path: "/CLIProxyAPI/plugins/cpa-model-combo.db"
       retention_days: 365
       routes: []
 ```
 
 | Field | Default | Validation |
 | --- | --- | --- |
-| `data_path` | CPA root plus `plugins/model-router.db` | Converted to a clean absolute path; the parent directory is created with mode `0700` |
+| `data_path` | CPA root plus `plugins/cpa-model-combo.db` | Converted to a clean absolute path; the parent directory is created with mode `0700` |
 | `retention_days` | `365` | Integer from 1 through 3650 |
 
-`data_path` is a filesystem path, not a `file://` URI. Windows examples are `plugins/model-router.db`, `D:/CLIProxyAPI/plugins/model-router.db`, and `'D:\CLIProxyAPI\plugins\model-router.db'` in YAML. Relative paths resolve from the CPA process working directory. Configure drive-letter paths without an extra leading slash; SQLite URI encoding is handled internally.
+`data_path` is a filesystem path, not a `file://` URI. Windows examples are `plugins/cpa-model-combo.db`, `D:/CLIProxyAPI/plugins/cpa-model-combo.db`, and `'D:\CLIProxyAPI\plugins\cpa-model-combo.db'` in YAML. Relative paths resolve from the CPA process working directory. Configure drive-letter paths without an extra leading slash; SQLite URI encoding is handled internally.
 
 If `data_path` is absent, resolution checks:
 
 1. the loaded shared-library path for an ancestor named `plugins`;
 2. the CPA executable directory for a `plugins` directory;
 3. the current working directory for a `plugins` directory;
-4. `<absolute working directory>/plugins/model-router.db` when no CPA layout is found.
+4. `<absolute working directory>/plugins/cpa-model-combo.db` when no CPA layout is found.
 
-The resolver does not inspect, copy, or migrate the former default at `<CPA root>/data/model-router-usage.db`. An upgrade with no explicit `data_path` starts a new database. Configure the former path explicitly when its history must remain active.
+The resolver does not inspect, copy, or migrate former database locations. An upgrade with no explicit `data_path` starts a new database. Configure an old path explicitly when its history must remain active.
 
 The plugins directory must be writable and persistently mounted. Use an explicit absolute path elsewhere when production mounts plugin binaries read-only. Process restart persistence requires the next process to open the same file. Container replacement persistence requires that file's parent directory to be mounted outside the disposable container layer.
 
@@ -62,7 +62,7 @@ The database is dedicated to Model Router and uses SQLite WAL with file mode `06
 The SQLite schema contains:
 
 ```text
-model-router.db
+cpa-model-combo.db
 ├── store_state
 │   ├── storage_schema_version
 │   ├── next_sequence
@@ -201,16 +201,16 @@ All endpoints require CPA Management API authentication.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v0/management/plugins/model-router/usage/dashboard` | Overview and both tables from one read snapshot |
-| `GET` | `/v0/management/plugins/model-router/usage/overview` | Summary, series, filter values, and storage status |
-| `GET` | `/v0/management/plugins/model-router/usage/groups` | Sorted and paginated grouped usage |
-| `GET` | `/v0/management/plugins/model-router/usage/requests` | Sorted and paginated request details |
-| `GET` | `/v0/management/plugins/model-router/usage/prices` | Read the price book |
-| `PUT` | `/v0/management/plugins/model-router/usage/prices` | Replace prices and sync settings at an expected revision |
-| `POST` | `/v0/management/plugins/model-router/usage/prices/sync` | Synchronize observed models from models.dev |
-| `GET` | `/v0/management/plugins/model-router/usage/preferences` | Read dashboard preferences |
-| `PUT` | `/v0/management/plugins/model-router/usage/preferences` | Save dashboard preferences |
-| `POST` | `/v0/management/plugins/model-router/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/dashboard` | Overview and both tables from one read snapshot |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/overview` | Summary, series, filter values, and storage status |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/groups` | Sorted and paginated grouped usage |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/requests` | Sorted and paginated request details |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/prices` | Read the price book |
+| `PUT` | `/v0/management/plugins/cpa-model-combo/usage/prices` | Replace prices and sync settings at an expected revision |
+| `POST` | `/v0/management/plugins/cpa-model-combo/usage/prices/sync` | Synchronize observed models from models.dev |
+| `GET` | `/v0/management/plugins/cpa-model-combo/usage/preferences` | Read dashboard preferences |
+| `PUT` | `/v0/management/plugins/cpa-model-combo/usage/preferences` | Save dashboard preferences |
+| `POST` | `/v0/management/plugins/cpa-model-combo/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
 
 Overview, group, and request queries accept RFC3339 `from` and `to` plus optional `attribution`, `router_model`, `provider_model`, `source`, `service_tier`, and `result` filters. `router_model` always matches a literal route alias. Use `attribution=direct`, `attribution=unattributed`, or `attribution=routed` to filter by request origin; this keeps aliases named `direct` or `unattributed` distinct from the synthetic traffic classes. Group and request endpoints also accept `sort`, `order`, `offset`, and `limit`; the maximum page size is 500.
 

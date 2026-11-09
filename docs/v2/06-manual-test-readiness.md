@@ -26,17 +26,17 @@ Build on same OS and CPU architecture as target CPA host.
 make build
 ```
 
-Verified artifact: macOS amd64 `dist/model-router.dylib`, built by `make build`.
+Verified artifact: macOS amd64 `dist/cpa-model-combo.dylib`, built by `make build`.
 
-Linux `dist/model-router.so` and Windows `dist/model-router.dll` are Makefile targets.
+Linux `dist/cpa-model-combo.so` and Windows `dist/cpa-model-combo.dll` are Makefile targets.
 
 They were not built here.
 
-Build uses plugin ID `model-router` and version default `0.4.2`.
+Build uses plugin ID `cpa-model-combo` and version default `0.1.0`.
 
 Required ABI exports are `cliproxy_plugin_init`, `ModelRouterPluginCall`, `ModelRouterPluginFree`, and `ModelRouterPluginShutdown`.
 
-Configure plugin identity as `model-router` with host library extension.
+Configure plugin identity as `cpa-model-combo` with host library extension.
 
 Do not rename library basename.
 
@@ -75,18 +75,18 @@ Direct standalone plugin calls cannot run routing execution.
 Without native callback context, `Execute` returns:
 
 ```text
-model-router execution requires the native host callback context
+`cpa-model-combo` execution requires the native host callback context
 ```
 
 Without native stream bridge, `ExecuteStream` returns:
 
 ```text
-model-router streaming requires the native stream bridge
+`cpa-model-combo` streaming requires the native stream bridge
 ```
 
 ## Routing-only configuration
 
-Place following plugin configuration under disposable CPA `plugins.configs.model-router` entry.
+Place following plugin configuration under disposable CPA `plugins.configs.cpa-model-combo` entry.
 
 Physical model values identify local test-double behaviors only.
 
@@ -95,7 +95,7 @@ plugins:
   enabled: true
   dir: "${PLUGIN_DIR}"
   configs:
-    model-router:
+    cpa-model-combo:
       enabled: true
       priority: 100
       data_path: "${ROUTER_DB}"
@@ -162,7 +162,7 @@ Use only one of `targets` and legacy `models`.
 3. Write `${CPA_CONFIG}` from routing-only example.
 4. Configure local scripted test doubles for every `test/*` physical model.
 5. Start disposable CPA process with `${CPA_CONFIG}`.
-6. Confirm CPA loads `model-router` and registers four aliases.
+6. Confirm CPA loads `cpa-model-combo` and registers four aliases.
 7. Send requests only to aliases below through CPA test listener.
 8. Inspect test-double request logs and disposable CPA logs after each case.
 9. Stop disposable CPA process.
