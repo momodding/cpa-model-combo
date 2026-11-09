@@ -13,7 +13,7 @@ func TestResolveDefaultDataPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(plugins, defaultDataFileName)
-	if got := resolveDefaultDataPath(filepath.Join(plugins, "linux", "amd64", "model-combo.so"), "", ""); got != want {
+	if got := resolveDefaultDataPath(filepath.Join(plugins, "linux", "amd64", "cpa-model-combo.so"), "", ""); got != want {
 		t.Fatalf("plugin path default = %q, want %q", got, want)
 	}
 	if got := resolveDefaultDataPath("", filepath.Join(root, "CLIProxyAPI"), ""); got != want {
@@ -27,7 +27,7 @@ func TestResolveDefaultDataPath(t *testing.T) {
 func TestResolveDefaultDataPathFallsBackOutsideCPALayout(t *testing.T) {
 	workingDir := t.TempDir()
 	want := filepath.Join(workingDir, "plugins", defaultDataFileName)
-	if got := resolveDefaultDataPath("/model-combo.so", "/CLIProxyAPI", workingDir); got != want {
+	if got := resolveDefaultDataPath("/cpa-model-combo.so", "/CLIProxyAPI", workingDir); got != want {
 		t.Fatalf("fallback = %q, want %q", got, want)
 	}
 }
@@ -46,7 +46,7 @@ func TestResolveDefaultDataPathDoesNotSelectLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(plugins, defaultDataFileName)
-	if got := resolveDefaultDataPath(filepath.Join(plugins, "model-combo.so"), "", root); got != want {
+	if got := resolveDefaultDataPath(filepath.Join(plugins, "cpa-model-combo.so"), "", root); got != want {
 		t.Fatalf("default with legacy database = %q, want %q", got, want)
 	}
 }

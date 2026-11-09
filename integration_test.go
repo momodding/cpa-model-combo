@@ -107,7 +107,7 @@ func TestModelRouterWithCLIProxyAPI(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pluginPath := filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())
+	pluginPath := filepath.Join(pluginsDir, "cpa-model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginPath, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -128,7 +128,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-combo:
+    cpa-model-combo:
       enabled: true
       priority: 100
       retention_days: 45
@@ -477,7 +477,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 `, name, prefix, provider.URL+"/v1", key)
 	}
 	workDir := t.TempDir()
-	pluginArtifact := filepath.Join(workDir, "model-combo"+sharedLibraryExtension())
+	pluginArtifact := filepath.Join(workDir, "cpa-model-combo"+sharedLibraryExtension())
 	runSmokeCommand(t, ".", "go", "build", "-buildmode=c-shared", "-o", pluginArtifact, ".")
 	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
 	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
@@ -488,7 +488,7 @@ func TestModelRouterFallbackStatusesWithCLIProxyAPI(t *testing.T) {
 			if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "model-combo"+sharedLibraryExtension())); err != nil {
+			if err := os.Link(pluginArtifact, filepath.Join(pluginsDir, "cpa-model-combo"+sharedLibraryExtension())); err != nil {
 				t.Fatalf("link plugin for %s: %v", scenario.name, err)
 			}
 			port := reserveLocalPort(t)
@@ -503,7 +503,7 @@ plugins:
   enabled: true
   dir: %q
   configs:
-    model-combo:
+    cpa-model-combo:
       enabled: true
       priority: 100
       fallback: {%s}
@@ -759,7 +759,7 @@ func verifyModelRouterManagementUI(t *testing.T, baseURL string, logs *smokeSync
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>Model Combo</title>") {
+	if resourceResponse.StatusCode != http.StatusOK || !strings.Contains(string(resourceBody), "<title>cpa-model-combo</title>") {
 		t.Fatalf("dashboard status=%s body=%q", resourceResponse.Status, resourceBody)
 	}
 	for _, expected := range []string{"/v0/management/api-keys", "/v1/models", "<select data-target-field=\"model\"", "data-target-field=\"weight\"", "data-target-help"} {

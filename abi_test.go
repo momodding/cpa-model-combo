@@ -28,7 +28,7 @@ func TestPluginMetadataPublicIdentity(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &registration); err != nil {
 		t.Fatalf("decode registration result: %v", err)
 	}
-	if registration.Metadata.Name != "Model Combo" || registration.Metadata.GitHubRepository != "https://github.com/markhuangai/cpa-plugin-model-combo" {
+	if registration.Metadata.Name != "cpa-model-combo" || registration.Metadata.GitHubRepository != "https://github.com/momodding/cpa-model-combo" {
 		t.Fatalf("public metadata = %+v", registration.Metadata)
 	}
 }
@@ -55,7 +55,7 @@ func TestABIRegistrationRoutingAndCountTokens(t *testing.T) {
 	if err := json.Unmarshal(registrationEnvelope.Result, &registration); err != nil {
 		t.Fatalf("decode registration result: %v", err)
 	}
-	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.4.2" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
+	if !registrationEnvelope.OK || registration.SchemaVersion != registrationSchemaVersion || registration.Metadata.Name != pluginName || registration.Metadata.Version != "0.1.0" || !registration.Capabilities.ModelRegistrar || !registration.Capabilities.ModelRouter || !registration.Capabilities.Executor || !registration.Capabilities.RequestInterceptor || registration.Capabilities.RequestLifecycle || registration.Capabilities.ResponseInterceptor || registration.Capabilities.StreamInterceptor || !registration.Capabilities.UsagePlugin || !registration.Capabilities.ManagementAPI {
 		t.Fatalf("registration = %#v", registration)
 	}
 

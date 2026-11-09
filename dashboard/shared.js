@@ -1,9 +1,9 @@
 'use strict';
-const CONFIG_API='/v0/management/plugins/model-combo/config';
-const VALIDATE_API='/v0/management/plugins/model-combo/validate';
+const CONFIG_API='/v0/management/plugins/cpa-model-combo/config';
+const VALIDATE_API='/v0/management/plugins/cpa-model-combo/validate';
 const API_KEYS_API='/v0/management/api-keys';
 const MODELS_API='/v1/models';
-const USAGE_API='/v0/management/plugins/model-combo/usage';
+const USAGE_API='/v0/management/plugins/cpa-model-combo/usage';
 const ROUTER_FILTER_MODEL_PREFIX='model:';
 const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:';
 const DEFAULT_HIDDEN_GROUP_COLUMNS=['provider','result','router_model','service_tier','source'];

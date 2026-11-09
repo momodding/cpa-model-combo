@@ -119,7 +119,7 @@ type fallbackConfigYAML struct {
 	StreamFallbackBeforePayload *bool     `yaml:"stream_fallback_before_payload,omitempty" json:"stream_fallback_before_payload"`
 }
 
-const unsupportedAccountAwareSchemaError = "model-combo config does not support legacy account-aware schema fields account_pools or combos; migrate to routes with model targets"
+const unsupportedAccountAwareSchemaError = "cpa-model-combo config does not support legacy account-aware schema fields account_pools or combos; migrate to routes with model targets"
 
 type routerConfigYAML struct {
 	Enabled       *bool               `yaml:"enabled,omitempty"`

@@ -110,7 +110,7 @@ function normalizeModelCatalog(payload,routes){
   payload.data.forEach(item=>{
     const id=item&&typeof item.id==='string'?item.id.trim():'';
     const owner=item&&typeof item.owned_by==='string'?item.owned_by.trim().toLowerCase():'';
-    if(!id||owner==='model-combo'||aliases.has(id.toLowerCase())||seen.has(id))return;
+    if(!id||owner==='cpa-model-combo'||aliases.has(id.toLowerCase())||seen.has(id))return;
     seen.add(id);
     models.push(id);
   });

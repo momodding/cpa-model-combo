@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	pluginID   = "model-combo"
-	pluginName = "Model Combo"
+	pluginID   = "cpa-model-combo"
+	pluginName = "cpa-model-combo"
 )
 
-var pluginVersion = "0.4.2"
+var pluginVersion = "0.1.0"
 
 type modelRouterPlugin struct {
 	config           routerConfig
@@ -67,11 +67,11 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
 		Version:          pluginVersion,
-		Author:           "markhuangai",
-		GitHubRepository: "https://github.com/markhuangai/cpa-plugin-model-combo",
+		Author:           "momodding",
+		GitHubRepository: "https://github.com/momodding/cpa-model-combo",
 		ConfigFields: []pluginapi.ConfigField{
 			{Name: "routes", Type: pluginapi.ConfigFieldTypeArray, Description: "Logical model aliases backed by priority or weighted round-robin target pools."},
-			{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "SQLite usage database path; defaults to model-router.db in the discovered CPA plugins directory."},
+			{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "SQLite usage database path; defaults to cpa-model-combo.db in the discovered CPA plugins directory."},
 			{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of usage aggregates and request details to retain (1-3650)."},
 			{Name: "fallback", Type: pluginapi.ConfigFieldTypeObject, Description: "Status codes that move a routed request to the next target: fallback_on_status, no_fallback_on_status, stream_fallback_before_payload."},
 		},
