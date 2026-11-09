@@ -1,10 +1,14 @@
-# CPA Model Combo
+# cpa-model-combo
 
-[![test](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/test.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/test.yml)
-[![release](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/release.yml/badge.svg)](https://github.com/markhuangai/cpa-plugin-model-combo/actions/workflows/release.yml)
+[![test](https://github.com/momodding/cpa-model-combo/actions/workflows/test.yml/badge.svg)](https://github.com/momodding/cpa-model-combo/actions/workflows/test.yml)
+[![release](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml/badge.svg)](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-CPA Model Combo is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-routing and executor plugin. It ports the configured model alias, priority routing, round-robin routing, cooldown, and failover behavior from `Z-M-Huang/CLIProxyAPI` into a standalone plugin for upstream CPA.
+`cpa-model-combo` is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-routing and executor plugin. It routes configured model aliases through priority routing, round-robin routing, cooldown, and failover.
+
+## Fork provenance
+
+This project is forked from [markhuangai/cpa-plugin-model-router](https://github.com/markhuangai/cpa-plugin-model-router). Upstream MIT attribution and terms remain in [LICENSE](LICENSE).
 
 The plugin does not call providers directly. For each selected physical model it calls CPA's host model executor, so CPA keeps control of provider credentials, protocol translation, proxy policy, request logging, and usage capture.
 
@@ -37,10 +41,10 @@ plugins:
   enabled: true
   dir: "/absolute/path/to/plugins"
   configs:
-    model-combo:
+    cpa-model-combo:
       enabled: true
       priority: 100
-      data_path: "/CLIProxyAPI/plugins/model-router.db"
+      data_path: "/CLIProxyAPI/plugins/cpa-model-combo.db"
       retention_days: 365
       routes:
         - alias: auto
@@ -64,41 +68,24 @@ plugins:
               weight: 1
 ```
 
-`plugins.enabled` and `plugins.configs.model-combo.enabled` must both be true. The library basename must be exactly `model-combo` with the host extension: `.so`, `.dylib`, or `.dll`.
+`plugins.enabled` and `plugins.configs.cpa-model-combo.enabled` must both be true. The library basename must be exactly `cpa-model-combo` with the host extension: `.so`, `.dylib`, or `.dll`.
 
 Only two usage-storage settings are supported:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `data_path` | CPA `plugins/model-router.db` | Dedicated SQLite database path. Explicit relative paths resolve from the CPA process working directory. |
+| `data_path` | CPA `plugins/cpa-model-combo.db` | Dedicated SQLite database path. Explicit relative paths resolve from the CPA process working directory. |
 | `retention_days` | `365` | UTC days of request details and aggregates to retain, from 1 through 3650. |
 
-`data_path` accepts filesystem paths, not `file://` URIs. On Windows, use a relative path such as `plugins/model-router.db`, an absolute path such as `D:/CLIProxyAPI/plugins/model-router.db`, or a single-quoted YAML path such as `'D:\CLIProxyAPI\plugins\model-router.db'`. Relative paths resolve from the CPA process working directory; do not add a slash before a Windows drive letter.
+`data_path` accepts filesystem paths, not `file://` URIs. On Windows, use a relative path such as `plugins/cpa-model-combo.db`, an absolute path such as `D:/CLIProxyAPI/plugins/cpa-model-combo.db`, or a single-quoted YAML path such as `'D:\CLIProxyAPI\plugins\cpa-model-combo.db'`. Relative paths resolve from the CPA process working directory; do not add a slash before a Windows drive letter.
 
-When `data_path` is omitted, the plugin locates the CPA root from the loaded library, then the CPA executable, then the current working directory. It stores the database at `<CPA root>/plugins/model-router.db`; outside a detected CPA layout it uses `<working directory>/plugins/model-router.db`. The plugins directory must be writable and persistently mounted. Use an explicit absolute `data_path` when the plugin directory is read-only or stored on a disposable container layer.
+When `data_path` is omitted, the plugin locates the CPA root from the loaded library, then the CPA executable, then the current working directory. It stores the database at `<CPA root>/plugins/cpa-model-combo.db`; outside a detected CPA layout it uses `<working directory>/plugins/cpa-model-combo.db`. Existing `model-router.db` history is not migrated; set `data_path` explicitly to retain it.
 
-Version 0.4.0 opens the configured path as SQLite in WAL mode. When that path contains a v0.3.x bbolt database, the first v0.4.0 open performs a one-time, integrity-checked migration and retains the original file as `<data_path>.bbolt-v1.bak`. The migration marker and temporary file make an interrupted copy recoverable; a changed or corrupt source is rejected rather than overwritten. The former omitted-path default at `<CPA root>/data/model-router-usage.db` is not discovered automatically, so set that path explicitly when its history must remain active.
-
-Version 0.4.2 keeps configuration actions out of the way until the draft differs from the loaded CPA configuration. Version 0.4.1 added weighted ordered targets for round-robin routes; the weight is a manual outer-routing share, and CPA still selects the credential behind the chosen model.
-
-Every usage record received by the plugin is committed synchronously. On supported CPA versions, asynchronous native usage delivery survives request completion. Usage history, prices, and dashboard preferences therefore survive a normal CPA restart when the same database file remains mounted and writable. WAL allows an old and a new plugin generation to overlap while CPA hot-loads a compatible update. Retention deletes expired rows; SQLite may retain reusable pages, so high-volume installations should monitor the database file and choose retention based on request rate and available storage.
-
-### Updating from v0.3.x
-
-The bbolt-to-SQLite transition is the only controlled interruption required by this plugin. Keep CPA running, stop new requests, and use CPA's plugin management update flow to unload and replace the loaded `model-router` library once. Do not delete `model-router.db`; it is the migration source. After the new library registers, verify that `<data_path>.bbolt-v1.bak` exists and that the Usage tracking page still shows the previous history. Future v0.4.x updates use SQLite WAL and can hot-load while generations overlap.
-
-If migration reports a source-digest, corruption, or registration error, leave the marker and backup files in place and restore the previous artifact. The exact rollback is:
-
-```bash
-cp -- "<data_path>.bbolt-v1.bak" "<data_path>"
-rm -f -- "<data_path>.migration-v1.json" "<data_path>.sqlite-v1.migrating"
-```
-
-Only run that rollback while the `model-router` plugin is unloaded. The backup is a copy of the original bbolt file; never overwrite it with an unverified database.
+Usage records are committed synchronously. On supported CPA versions, asynchronous native usage delivery survives request completion. Usage history, prices, and dashboard preferences survive a normal CPA restart when the same database file remains mounted and writable. Retention deletes expired rows; high-volume installations should monitor the database file and choose retention based on request rate and available storage.
 
 ### Configuration UI
 
-The plugin registers a **Model Combo** page in CPA's management frontend. Open the Plugins section and select **Model Combo**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
+The plugin registers a **cpa-model-combo** page in CPA's management frontend. Open the Plugins section and select **cpa-model-combo**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
 
 Model discovery uses the management session to read CPA's configured client API keys, then keeps the first non-empty key in browser memory only while requesting `/v1/models`. The client key is not rendered or stored. If no client key is configured, the page attempts the model request without authorization for CPA installations without frontend authentication. Existing targets that are absent from the live catalog remain visible as disabled `<model> (unavailable)` choices until they are replaced, so loading the page never changes saved routes. New UI targets must be selected from the live catalog; custom or suffixed targets can still be managed through YAML or the Management API.
 
@@ -222,7 +209,7 @@ CPA_SOURCE=../CLIProxyAPI \
 The black-box test builds CPA and the native plugin in a temporary directory, starts logical providers on a local mock OpenAI-compatible server, loads the library through CPA, and verifies all of the following without real provider credentials. Public CI runs it against the minimum supported CPA v7.3.9 commit:
 
 - the logical alias appears in `/v1/models`;
-- the Model Combo menu and parser-backed validation endpoint are available;
+- the cpa-model-combo menu and parser-backed validation endpoint are available;
 - a `429` from the first target fails over to the second target;
 - the client sees the requested alias in the response;
 - the failed target remains on cooldown for the next request;
@@ -235,7 +222,7 @@ The test currently runs on Linux and macOS.
 The browser E2E test exercises the dashboard against a disposable local CPA instance. It changes route configuration, pricing, and dashboard preferences, then resets usage history, so do not point it at a shared or production instance. Install its pinned browser dependency with `npm ci`, then run:
 
 ```bash
-DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/model-combo/config \
+DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/cpa-model-combo/config \
 DASHBOARD_MANAGEMENT_KEY='replace-with-disposable-instance-key' \
 npm run test:e2e
 ```
@@ -245,8 +232,8 @@ Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when Chromium is not available at `/usr/bin
 ### Manual local installation
 
 1. Run `make build` on the CPA host machine.
-2. Copy `dist/model-combo.so` on Linux, `dist/model-combo.dylib` on macOS, or `dist/model-combo.dll` on Windows into the configured `plugins.dir`. CPA also scans `plugins.dir/<goos>/<goarch>`.
-3. Add `plugins.configs.model-combo.enabled: true`. Add routes in YAML or through the Model Combo management page. Every target model must already be routable by CPA.
+2. Copy `dist/cpa-model-combo.so` on Linux, `dist/cpa-model-combo.dylib` on macOS, or `dist/cpa-model-combo.dll` on Windows into the configured `plugins.dir`. CPA also scans `plugins.dir/<goos>/<goarch>`.
+3. Add `plugins.configs.cpa-model-combo.enabled: true`. Add routes in YAML or through the cpa-model-combo management page. Every target model must already be routable by CPA.
 4. Start CPA with `go run ./cmd/server --config /path/to/config.yaml` or your normal CPA binary.
 5. Verify that the alias is listed:
 
@@ -261,7 +248,7 @@ curl -fsS http://127.0.0.1:8317/v1/models \
 ```bash
 curl -fsS http://127.0.0.1:8317/v0/management/plugins \
   -H "Authorization: Bearer $MANAGEMENT_PASSWORD" \
-  | jq '.plugins[] | select(.id == "model-router")'
+  | jq '.plugins[] | select(.id == "cpa-model-combo")'
 ```
 
 `registered`, `enabled`, and `effective_enabled` should all be true. A copied library is trusted in-process code; only load artifacts you built or verified.
@@ -284,43 +271,41 @@ The database is not encrypted by the plugin. Protect the configured path with fi
 
 ## Publishing And Plugin Store Registration
 
-The release workflow accepts tags such as `v0.4.2` and builds these CPA Plugin Store assets:
+The first release is `v0.1.0`; workflow assets are:
 
 ```text
-model-router_0.4.2_linux_amd64.zip
-model-router_0.4.2_linux_arm64.zip
-model-router_0.4.2_darwin_amd64.zip
-model-router_0.4.2_darwin_arm64.zip
-model-router_0.4.2_windows_amd64.zip
+cpa-model-combo_0.1.0_linux_amd64.zip
+cpa-model-combo_0.1.0_linux_arm64.zip
+cpa-model-combo_0.1.0_darwin_amd64.zip
+cpa-model-combo_0.1.0_darwin_arm64.zip
+cpa-model-combo_0.1.0_windows_amd64.zip
 checksums.txt
 ```
 
-Each zip contains exactly one root-level library named `model-router.so`, `model-router.dylib`, or `model-router.dll`. The workflow embeds the tag version in plugin metadata and validates the archive layout before publishing.
+Each ZIP contains one root-level library named `cpa-model-combo.so`, `cpa-model-combo.dylib`, or `cpa-model-combo.dll`.
 
-To register the plugin publicly:
+Manual handoff sequence:
 
-1. Push this repository to `https://github.com/markhuangai/cpa-plugin-model-combo`.
-2. Create and push a `v<major>.<minor>.<patch>` tag. Confirm the GitHub release contains all five zips plus `checksums.txt`.
-3. Fork `router-for-me/CLIProxyAPI-Plugins-Store` and add this object to `registry.json`:
+1. Rename or create `https://github.com/momodding/cpa-model-combo`, then update shared `origin` after the rename.
+2. Push merged commits and create/push tag `v0.1.0`.
+3. Let the release workflow publish assets; verify five ZIPs and `checksums.txt`.
+4. Open a `router-for-me/CLIProxyAPI-Plugins-Store` PR changing only `registry.json` with release evidence:
 
 ```json
 {
-  "id": "model-router",
-  "name": "Model Router",
-  "description": "Adds logical model aliases with priority or round-robin selection, cooldowns, and failover across CPA model targets.",
-  "author": "markhuangai",
-  "repository": "https://github.com/markhuangai/cpa-plugin-model-combo",
-  "homepage": "https://github.com/markhuangai/cpa-plugin-model-combo",
+  "id": "cpa-model-combo",
+  "name": "cpa-model-combo",
+  "description": "Routes logical model aliases across priority and weighted round-robin target pools with cooldown, failover, and usage tracking.",
+  "author": "momodding",
+  "version": "0.1.0",
+  "repository": "https://github.com/momodding/cpa-model-combo",
+  "homepage": "https://github.com/momodding/cpa-model-combo",
   "license": "MIT",
-  "tags": ["Router", "Model Combo", "Fallback"]
+  "tags": ["Router"]
 }
 ```
 
-4. Open a Plugin Store pull request that changes `registry.json`. Include the release tag and evidence that the platform archives and checksum file exist.
-
-Do not add a `version` field unless the store maintainers request it. CPA discovers the latest version from the repository's newest published `v*` release.
-
-After the registry PR is merged, install through the CPA management UI or `POST /v0/management/plugin-store/model-router/install`, then configure routes from the plugin's **Model Router** page or the generic config API.
+After the registry PR is merged, install through CPA management UI or `POST /v0/management/plugin-store/cpa-model-combo/install`, then configure routes from the **cpa-model-combo** page or generic config API.
 
 ## License
 
