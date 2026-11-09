@@ -1,5 +1,5 @@
-PLUGIN_ID := model-combo
-VERSION ?= 0.4.2
+PLUGIN_ID := cpa-model-combo
+VERSION ?= 0.1.0
 GOOS := $(shell go env GOOS)
 
 ifeq ($(GOOS),windows)
