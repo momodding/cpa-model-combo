@@ -1,9 +1,9 @@
 'use strict';
-const CONFIG_API='/v0/management/plugins/cpa-model-combo/config';
-const VALIDATE_API='/v0/management/plugins/cpa-model-combo/validate';
+const CONFIG_API='/v0/management/plugins/model-combo/config';
+const VALIDATE_API='/v0/management/plugins/model-combo/validate';
 const API_KEYS_API='/v0/management/api-keys';
 const MODELS_API='/v1/models';
-const USAGE_API='/v0/management/plugins/cpa-model-combo/usage';
+const USAGE_API='/v0/management/plugins/model-combo/usage';
 const ROUTER_FILTER_MODEL_PREFIX='model:';
 const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:';
 const DEFAULT_HIDDEN_GROUP_COLUMNS=['provider','result','router_model','service_tier','source'];
@@ -12,7 +12,8 @@ const CPA_STORAGE_SALT='cli-proxy-api-webui::secure-storage';
 const SESSION_KEY='cpa_model_combo_key';
 const REJECTED_KEY='cpa_model_combo_rejected_key';
 const REJECTED_AT='cpa_model_combo_rejected_at';
-	const state={enabled:true,priority:'0',routes:[],fallback:{enabled:true,fallback_on_status:'401, 402, 403, 404, 408, 429, 500, 502, 503, 504',no_fallback_on_status:'',retry_codes:'',no_retry_codes:'',max_attempts:'0',stream_fallback_before_payload:true},availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
+const DEFAULT_FALLBACK_ON_STATUS='401, 402, 403, 404, 408, 429, 500, 502, 503, 504';
+	const state={enabled:true,priority:'0',routes:[],fallback:{enabled:true,fallback_on_status:DEFAULT_FALLBACK_ON_STATUS,no_fallback_on_status:'',retry_codes:'',no_retry_codes:'',max_attempts:'0',stream_fallback_before_payload:true},availableModels:[],catalogLoaded:false,catalogError:'',baselineSnapshot:null,dirty:false,busy:false};
 const usageState={
   active:false,initialized:false,preferencesLoaded:false,loading:false,generation:0,controller:null,timer:0,filterTimer:0,displayedRange:null,displayedFilterKey:'',pendingFullRefresh:false,preferenceTimer:0,preferenceSaveGeneration:0,preferenceSaveInFlight:false,preferenceSaveQueued:false,resizeTimer:0,
   overview:null,groupPage:null,requestPage:null,expandedRequests:new Set(),range:'24h',granularity:'hour',customFrom:'',customTo:'',attribution:'',routerModel:'',providerModel:'',source:'',serviceTier:'',result:'',pricingDialogGeneration:0,pricingWriteInFlight:null,

@@ -1,5 +1,5 @@
-PLUGIN_ID := cpa-model-combo
-VERSION ?= 0.1.0
+PLUGIN_ID := model-combo
+VERSION ?= 1.0.1
 GOOS := $(shell go env GOOS)
 
 ifeq ($(GOOS),windows)
@@ -31,7 +31,7 @@ check: fmt-check test race vet
 
 build:
 	mkdir -p dist
-	CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -ldflags="-s -w -X main.pluginVersion=$(VERSION)" -o dist/$(PLUGIN_ID).$(LIB_EXT) .
+	CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -ldflags="-s -w -X main.pluginVersion=$(VERSION)" -o dist/$(PLUGIN_ID)-v$(VERSION).$(LIB_EXT) .
 
 clean:
 	go clean

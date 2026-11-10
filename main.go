@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	pluginID   = "cpa-model-combo"
-	pluginName = "cpa-model-combo"
+	pluginID   = "model-combo"
+	pluginName = "Model Combo"
 )
 
 var pluginVersion = "0.1.0"

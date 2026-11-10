@@ -100,7 +100,7 @@ for target in "${targets[@]}"; do
 
   package_dir="/release/package-${goos}-${goarch}"
   docker exec "$container_id" mkdir -p "$package_dir"
-  docker cp "$source_library" "${container_id}:${package_dir}/${plugin_id}.${extension}"
+  docker cp "$source_library" "${container_id}:${package_dir}/${plugin_id}-v${version}.${extension}"
 done
 
 docker exec \
@@ -118,7 +118,7 @@ docker exec \
         darwin) extension=dylib ;;
         *) extension=so ;;
       esac
-      library="$PLUGIN_ID.$extension"
+      library="$PLUGIN_ID-v$VERSION.$extension"
       archive="/release/${PLUGIN_ID}_${VERSION}_${goos}_${goarch}.zip"
       (cd "$package_dir" && zip -q "$archive" "$library")
       [[ "$(unzip -Z1 "$archive")" == "$library" ]]

@@ -1,10 +1,10 @@
 # Usage Tracking
 
-This document is the implementation contract for Model Router usage tracking. Keep it with the feature when rebasing or syncing changes from another remote.
+This document is the implementation contract for Model Combo usage tracking. Keep it with the feature when rebasing or syncing changes from another remote.
 
 ## Scope
 
-The feature adds a **Usage tracking** tab to the existing Model Router management page. **Configuration** remains the default tab, and the centered tab controls sit above the route table and **Add route** button.
+The feature adds a **Usage tracking** tab to the existing Model Combo management page. **Configuration** remains the default tab, and the centered tab controls sit above the route table and **Add route** button.
 
 Usage tracking covers both kinds of CPA traffic:
 
@@ -32,7 +32,7 @@ The feature intentionally does not include:
 ```yaml
 plugins:
   configs:
-    cpa-model-combo:
+    model-combo:
       enabled: true
       data_path: "/CLIProxyAPI/plugins/cpa-model-combo.db"
       retention_days: 365
@@ -201,16 +201,16 @@ All endpoints require CPA Management API authentication.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/dashboard` | Overview and both tables from one read snapshot |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/overview` | Summary, series, filter values, and storage status |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/groups` | Sorted and paginated grouped usage |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/requests` | Sorted and paginated request details |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/prices` | Read the price book |
-| `PUT` | `/v0/management/plugins/cpa-model-combo/usage/prices` | Replace prices and sync settings at an expected revision |
-| `POST` | `/v0/management/plugins/cpa-model-combo/usage/prices/sync` | Synchronize observed models from models.dev |
-| `GET` | `/v0/management/plugins/cpa-model-combo/usage/preferences` | Read dashboard preferences |
-| `PUT` | `/v0/management/plugins/cpa-model-combo/usage/preferences` | Save dashboard preferences |
-| `POST` | `/v0/management/plugins/cpa-model-combo/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
+| `GET` | `/v0/management/plugins/model-combo/usage/dashboard` | Overview and both tables from one read snapshot |
+| `GET` | `/v0/management/plugins/model-combo/usage/overview` | Summary, series, filter values, and storage status |
+| `GET` | `/v0/management/plugins/model-combo/usage/groups` | Sorted and paginated grouped usage |
+| `GET` | `/v0/management/plugins/model-combo/usage/requests` | Sorted and paginated request details |
+| `GET` | `/v0/management/plugins/model-combo/usage/prices` | Read the price book |
+| `PUT` | `/v0/management/plugins/model-combo/usage/prices` | Replace prices and sync settings at an expected revision |
+| `POST` | `/v0/management/plugins/model-combo/usage/prices/sync` | Synchronize observed models from models.dev |
+| `GET` | `/v0/management/plugins/model-combo/usage/preferences` | Read dashboard preferences |
+| `PUT` | `/v0/management/plugins/model-combo/usage/preferences` | Save dashboard preferences |
+| `POST` | `/v0/management/plugins/model-combo/usage/reset` | Delete usage after receiving `{"confirm":"reset"}` |
 
 Overview, group, and request queries accept RFC3339 `from` and `to` plus optional `attribution`, `router_model`, `provider_model`, `source`, `service_tier`, and `result` filters. `router_model` always matches a literal route alias. Use `attribution=direct`, `attribution=unattributed`, or `attribution=routed` to filter by request origin; this keeps aliases named `direct` or `unattributed` distinct from the synthetic traffic classes. Group and request endpoints also accept `sort`, `order`, `offset`, and `limit`; the maximum page size is 500.
 

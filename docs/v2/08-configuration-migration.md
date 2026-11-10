@@ -1,10 +1,12 @@
 # Configuration migration
 
-Use canonical `cpa-model-combo` identity for configuration, artifacts, and dashboard links.
+Use `Model Combo` display identity and `model-combo` for configuration, artifacts, and dashboard links.
 
-- Plugin identity: `cpa-model-combo`.
-- Artifacts: `cpa-model-combo.dylib`, `cpa-model-combo.so`, or `cpa-model-combo.dll`.
-- Dashboard resource: `/v0/resource/plugins/cpa-model-combo/config`.
+- Plugin identity/config key: `model-combo`.
+- Artifacts: `model-combo-v1.0.1.dylib`, `model-combo-v1.0.1.so`, or `model-combo-v1.0.1.dll`.
+- Dashboard resource: `/v0/resource/plugins/model-combo/config`.
+
+Rename `plugins.configs.cpa-model-combo` to `plugins.configs.model-combo`; no compatibility key exists. Keep `cpa-model-combo.db` unchanged to retain usage history.
 
 CPA v8.0.4 compatibility is unverified. Do not treat this guide as support confirmation for that version.
 
@@ -50,8 +52,8 @@ Unknown fields fail configuration decoding. This prevents silently ignored missp
 1. Back up deployed configuration and existing plugin artifact.
 2. Convert account-aware settings into explicit `routes` and `targets`.
 3. Validate configuration on one compatible host before fleet deployment.
-4. Install only matching `cpa-model-combo` artifact for host operating system.
-5. Confirm dashboard reads `/v0/resource/plugins/cpa-model-combo/config`.
+4. Install only matching versioned `model-combo-v<version>` artifact for host operating system.
+5. Confirm dashboard reads `/v0/resource/plugins/model-combo/config`.
 6. Upgrade remaining hosts after canary routing behaves as expected.
 7. Roll back by restoring previous artifact and backed-up configuration together.
 

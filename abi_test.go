@@ -28,7 +28,7 @@ func TestPluginMetadataPublicIdentity(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &registration); err != nil {
 		t.Fatalf("decode registration result: %v", err)
 	}
-	if registration.Metadata.Name != "cpa-model-combo" || registration.Metadata.GitHubRepository != "https://github.com/momodding/cpa-model-combo" {
+	if registration.Metadata.Name != "Model Combo" || registration.Metadata.GitHubRepository != "https://github.com/momodding/cpa-model-combo" {
 		t.Fatalf("public metadata = %+v", registration.Metadata)
 	}
 }

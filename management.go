@@ -54,7 +54,7 @@ type modelRouterValidationRequest struct {
 func modelRouterManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate cpa-model-combo configuration before saving it."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Model Combo configuration before saving it."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/dashboard", Description: "Read usage summaries and both tables from one snapshot."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/overview", Description: "Read usage summaries, trends, costs, and model breakdowns."},
 			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/usage/groups", Description: "Read paginated usage dimension groups."},
@@ -68,8 +68,8 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
-			Menu:        "cpa-model-combo",
-			Description: "Configure logical aliases and ordered model target pools.",
+			Menu:        pluginName,
+			Description: "Configure Model Combo logical aliases and ordered model target pools.",
 		}},
 	}
 }

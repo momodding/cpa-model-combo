@@ -31,21 +31,21 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &management); err != nil {
 		t.Fatalf("decode management result: %v", err)
 	}
-	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "cpa-model-combo" {
+	if len(management.Resources) != 1 || management.Resources[0].Path != "/config" || management.Resources[0].Menu != "Model Combo" {
 		t.Fatalf("resources = %#v", management.Resources)
 	}
 	wantedRoutes := map[string]bool{
-		http.MethodPost + " /plugins/cpa-model-combo/validate":          false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/dashboard":    false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/overview":     false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/groups":       false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/requests":     false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/prices":       false,
-		http.MethodPut + " /plugins/cpa-model-combo/usage/prices":       false,
-		http.MethodPost + " /plugins/cpa-model-combo/usage/prices/sync": false,
-		http.MethodGet + " /plugins/cpa-model-combo/usage/preferences":  false,
-		http.MethodPut + " /plugins/cpa-model-combo/usage/preferences":  false,
-		http.MethodPost + " /plugins/cpa-model-combo/usage/reset":       false,
+		http.MethodPost + " /plugins/model-combo/validate":          false,
+		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
+		http.MethodGet + " /plugins/model-combo/usage/overview":     false,
+		http.MethodGet + " /plugins/model-combo/usage/groups":       false,
+		http.MethodGet + " /plugins/model-combo/usage/requests":     false,
+		http.MethodGet + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPut + " /plugins/model-combo/usage/prices":       false,
+		http.MethodPost + " /plugins/model-combo/usage/prices/sync": false,
+		http.MethodGet + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPut + " /plugins/model-combo/usage/preferences":  false,
+		http.MethodPost + " /plugins/model-combo/usage/reset":       false,
 	}
 	for _, route := range management.Routes {
 		key := route.Method + " " + route.Path
@@ -85,9 +85,9 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 	}
 	page := string(response.Body)
 	for _, required := range []string{
-		"<title>cpa-model-combo</title>",
-		"/v0/management/plugins/cpa-model-combo/config",
-		"/v0/management/plugins/cpa-model-combo/validate",
+		"<title>Model Combo</title>",
+		"/v0/management/plugins/model-combo/config",
+		"/v0/management/plugins/model-combo/validate",
 		"/v0/management/api-keys",
 		"/v1/models",
 		"headers.Authorization='Bearer '+key",
@@ -126,7 +126,7 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		".configuration-actions-dock { transform: none !important; }",
 		"configurationActionsResizeObserver=new ResizeObserver(updateConfigurationActionsClearance)",
 		"id=\"usage-panel\" class=\"tab-panel usage-panel\" role=\"tabpanel\"",
-		"/v0/management/plugins/cpa-model-combo/usage",
+		"/v0/management/plugins/model-combo/usage",
 		"requestManagementJSON(USAGE_API+'/dashboard?'",
 		"requestManagementJSON(USAGE_API+'/overview?'",
 		"requestManagementJSON(USAGE_API+'/groups?'",
