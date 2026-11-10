@@ -225,7 +225,7 @@ openai-compatibility:
 		t.Fatalf("cache-creation fixture was not served; calls=%d models=%v", creationCalls.Load(), observedModels)
 	}
 
-	page := waitForSmokeUsage(t, baseURL, usageStart, 6, 10*time.Second)
+	page := waitForSmokeUsage(t, baseURL, usageStart, 5, 10*time.Second)
 	var dashboard usageDashboard
 	dashboardPath := modelRouterUsageBasePath + "/dashboard?" + url.Values{
 		"from": {usageStart.Format(time.RFC3339Nano)}, "to": {time.Now().UTC().Format(time.RFC3339Nano)},
@@ -234,7 +234,7 @@ openai-compatibility:
 	if err := requestSmokeManagementJSON(baseURL, dashboardPath, &dashboard); err != nil {
 		t.Fatal(err)
 	}
-	if dashboard.Overview.Summary.Requests != 6 || dashboard.Requests.Total != 6 || len(dashboard.Requests.Items) != 2 || dashboard.Groups.Dimension != "router_model" || dashboard.GeneratedAt != dashboard.Requests.GeneratedAt {
+	if dashboard.Overview.Summary.Requests != 6 || dashboard.Requests.Total != 5 || len(dashboard.Requests.Items) != 2 || dashboard.Groups.Dimension != "router_model" || dashboard.GeneratedAt != dashboard.Requests.GeneratedAt {
 		t.Fatalf("combined usage snapshot = %#v", dashboard)
 	}
 	unauthenticated, err := http.Get(baseURL + dashboardPath)
@@ -247,7 +247,7 @@ openai-compatibility:
 	}
 	routedModel := ""
 	foundDirect := false
-	routedSuccesses, routedFailures, directSuccesses := 0, 0, 0
+	routedSuccesses, routedFailures, routedAttemptFailures, directSuccesses := 0, 0, 0, 0
 	totalTokens := uint64(0)
 	cacheCreationTokens := uint64(0)
 	for _, item := range page.Items {
@@ -263,6 +263,11 @@ openai-compatibility:
 			} else {
 				routedSuccesses++
 			}
+			for _, attempt := range item.Attempts {
+				if attempt.Failed {
+					routedAttemptFailures++
+				}
+			}
 		case attributionDirect:
 			if item.RouterModel == "" && item.ProviderModel != "" {
 				foundDirect = true
@@ -275,8 +280,8 @@ openai-compatibility:
 	if routedModel == "" || !foundDirect {
 		t.Fatalf("usage records do not distinguish routed and direct calls: %#v\n%s", page.Items, logs.String())
 	}
-	if page.Total != 6 || routedSuccesses != 3 || routedFailures != 1 || directSuccesses != 2 || totalTokens != 14 || cacheCreationTokens != 2 {
-		t.Fatalf("usage records were missing, duplicated, or lost cache creation: total=%d routed_success=%d routed_failure=%d direct_success=%d tokens=%d cache_creation=%d items=%#v\n%s", page.Total, routedSuccesses, routedFailures, directSuccesses, totalTokens, cacheCreationTokens, page.Items, logs.String())
+	if page.Total != 5 || routedSuccesses != 3 || routedFailures != 0 || routedAttemptFailures != 1 || directSuccesses != 2 || totalTokens != 14 || cacheCreationTokens != 2 {
+		t.Fatalf("usage records were missing, duplicated, or lost cache creation: total=%d routed_success=%d routed_failure=%d routed_attempt_failure=%d direct_success=%d tokens=%d cache_creation=%d items=%#v\n%s", page.Total, routedSuccesses, routedFailures, routedAttemptFailures, directSuccesses, totalTokens, cacheCreationTokens, page.Items, logs.String())
 	}
 
 	savedPrices := putSmokeManagementJSON[saveModelPricesRequest, modelPriceBook](t, baseURL, modelRouterUsageBasePath+"/prices", saveModelPricesRequest{
