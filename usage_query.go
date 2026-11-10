@@ -582,6 +582,15 @@ func (selection *usageRequestSelection) matchesLogical(candidate usageRequestCan
 func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCandidate {
 	parent := attempts[len(attempts)-1]
 	parent.aggregate = true
+	parent.Attribution = attributionRouted
+	parent.RouterRequestID = attempts[0].RouterRequestID
+	parent.RouterModel = ""
+	for _, attempt := range attempts {
+		if attempt.RouterModel != "" {
+			parent.RouterModel = attempt.RouterModel
+			break
+		}
+	}
 	parent.Source = ""
 	parent.AccountingMode = ""
 	parent.InputTokens = 0

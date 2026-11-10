@@ -153,7 +153,7 @@ Check canonical plugin resource route:
 
 ```sh
 curl -sS -D "$CPA_ROOT/resource.headers" -o "$CPA_ROOT/resource.body" \
-  http://127.0.0.1:18317/v0/resource/plugins/cpa-model-combo/config
+  http://127.0.0.1:18317/v0/resource/plugins/model-combo/config
 awk 'NR == 1 || tolower($0) ~ /^content-type:/' "$CPA_ROOT/resource.headers"
 wc -c < "$CPA_ROOT/resource.body"
 ```

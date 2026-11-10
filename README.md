@@ -41,7 +41,7 @@ plugins:
   enabled: true
   dir: "/absolute/path/to/plugins"
   configs:
-    cpa-model-combo:
+    model-combo:
       enabled: true
       priority: 100
       data_path: "/CLIProxyAPI/plugins/cpa-model-combo.db"
@@ -68,7 +68,7 @@ plugins:
               weight: 1
 ```
 
-`plugins.enabled` and `plugins.configs.cpa-model-combo.enabled` must both be true. The library basename must be exactly `cpa-model-combo` with the host extension: `.so`, `.dylib`, or `.dll`.
+`plugins.enabled` and `plugins.configs.model-combo.enabled` must both be true. Install only versioned `model-combo-v<version>` libraries with the host extension: `.so`, `.dylib`, or `.dll`; `v1.0.1` uses `model-combo-v1.0.1.<ext>`.
 
 Only two usage-storage settings are supported:
 
@@ -85,7 +85,7 @@ Usage records are committed synchronously. On supported CPA versions, asynchrono
 
 ### Configuration UI
 
-The plugin registers a **cpa-model-combo** page in CPA's management frontend. Open the Plugins section and select **cpa-model-combo**. The centered **Configuration** and **Usage tracking** tabs appear above the route controls; Configuration is selected by default. When CPAMC has a persisted authenticated session, the page reuses its management key and loads configuration automatically. It also follows CPAMC's selected light, white, or dark theme and updates when that selection changes. The Configuration tab provides typed controls for route order, aliases, priority or round-robin strategy, cooldowns, ordered target pools, and round-robin weights. Target dropdowns are populated with the model IDs currently returned by CPA's `/v1/models` endpoint.
+The plugin registers a **Model Combo** page in CPA's management frontend. Open the Plugins section and select **Model Combo**. Its management paths use `model-combo`; existing installs must rename `plugins.configs.cpa-model-combo` to `plugins.configs.model-combo`. No old-key alias exists. The database remains `cpa-model-combo.db`, preserving usage history.
 
 Model discovery uses the management session to read CPA's configured client API keys, then keeps the first non-empty key in browser memory only while requesting `/v1/models`. The client key is not rendered or stored. If no client key is configured, the page attempts the model request without authorization for CPA installations without frontend authentication. Existing targets that are absent from the live catalog remain visible as disabled `<model> (unavailable)` choices until they are replaced, so loading the page never changes saved routes. New UI targets must be selected from the live catalog; custom or suffixed targets can still be managed through YAML or the Management API.
 
@@ -94,7 +94,7 @@ The fixed **Save changes** and **Discard and reload** dock slides into view only
 **Save changes** checks duplicate aliases, recursive routes, empty pools, duplicate targets, and cooldown values with the plugin's Go configuration parser before applying a shallow patch through CPA. The patch updates `enabled`, `priority`, and `routes` without replacing plugin-store metadata or unrelated config fields. The same page is available directly at:
 
 ```text
-/v0/resource/plugins/cpa-model-combo/config
+/v0/resource/plugins/model-combo/config
 ```
 
 The dashboard's shared, Configuration, and Usage tracking source lives under dashboard/; Go embeds these files in the plugin and assembles one HTML response when the plugin starts. CPA exposes that page as a public plugin resource so it can embed it in the frontend. Reading or changing configuration still requires the management key. The page reads CPAMC's persisted `cli-proxy-auth` value from same-origin browser storage; it does not change CPAMC's stored session. If **Remember password** is disabled, the persisted session has no key, so the page reveals a fallback key field. A fallback key is cached only in that tab's session storage and is removed when CPA rejects it. CPA's Management API must be enabled and reachable from the browser.
@@ -182,10 +182,10 @@ For staged migration, the plugin accepts `model-routes` instead of `routes` and 
 The fork-specific `/v0/management/model-routes` endpoints are not part of this plugin. The configuration page uses CPA's generic plugin endpoints, which remain available for automation:
 
 ```text
-GET   /v0/management/plugins/cpa-model-combo/config
-PUT   /v0/management/plugins/cpa-model-combo/config
-PATCH /v0/management/plugins/cpa-model-combo/config
-PATCH /v0/management/plugins/cpa-model-combo/enabled
+GET   /v0/management/plugins/model-combo/config
+PUT   /v0/management/plugins/model-combo/config
+PATCH /v0/management/plugins/model-combo/config
+PATCH /v0/management/plugins/model-combo/enabled
 ```
 
 ## Build And Test
@@ -222,7 +222,7 @@ The test currently runs on Linux and macOS.
 The browser E2E test exercises the dashboard against a disposable local CPA instance. It changes route configuration, pricing, and dashboard preferences, then resets usage history, so do not point it at a shared or production instance. Install its pinned browser dependency with `npm ci`, then run:
 
 ```bash
-DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/cpa-model-combo/config \
+DASHBOARD_URL=http://127.0.0.1:8317/v0/resource/plugins/model-combo/config \
 DASHBOARD_MANAGEMENT_KEY='replace-with-disposable-instance-key' \
 npm run test:e2e
 ```

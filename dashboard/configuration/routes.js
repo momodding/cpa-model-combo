@@ -88,11 +88,11 @@ function validateRoutes(routes){
 }
 function fallbackDraftFromConfig(value){
   const fallback=value&&typeof value==='object'?value:{};
-  const list=items=>Array.isArray(items)?items.map(String).join(', '):'';
+  const list=(items,defaultValue='')=>Array.isArray(items)&&items.length?items.map(String).join(', '):defaultValue;
   const integer=(number,fallbackValue)=>Number.isInteger(number)?String(number):fallbackValue;
   return{
     enabled:fallback.enabled!==false,
-    fallback_on_status:list(fallback.fallback_on_status),
+    fallback_on_status:list(fallback.fallback_on_status,DEFAULT_FALLBACK_ON_STATUS),
     no_fallback_on_status:list(fallback.no_fallback_on_status),
     retry_codes:list(fallback.retry_codes),
     no_retry_codes:list(fallback.no_retry_codes),

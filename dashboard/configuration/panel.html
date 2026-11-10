@@ -5,7 +5,7 @@
             <input id="plugin-enabled" type="checkbox" aria-describedby="plugin-enabled-help">
             <span aria-hidden="true"></span>
           </span>
-          Plugin enabled
+          <span>Plugin enabled</span>
           <span class="footer-hint" id="plugin-enabled-help">Enable changes apply asynchronously after saving.</span>
         </label>
         <div class="priority-field">
@@ -37,8 +37,11 @@
           <div class="section-title">
             <h2 id="fallback-settings-title">Fallback Settings</h2>
           </div>
-          <label class="toggle">
-            <input id="fallback-enabled" type="checkbox" data-fallback-field="enabled">
+          <label class="toggle-wrap">
+            <span class="toggle">
+              <input id="fallback-enabled" type="checkbox" data-fallback-field="enabled">
+              <span aria-hidden="true"></span>
+            </span>
             <span>Fallback enabled</span>
           </label>
         </div>
@@ -71,8 +74,11 @@
             <small>Zero means one attempt per route target.</small>
           </div>
           <div class="field">
-            <label class="toggle">
-		      <input id="fallback-stream-before-payload" type="checkbox" data-fallback-field="stream_fallback_before_payload" checked disabled>
+            <label class="toggle-wrap">
+              <span class="toggle">
+		        <input id="fallback-stream-before-payload" type="checkbox" data-fallback-field="stream_fallback_before_payload" checked disabled>
+                <span aria-hidden="true"></span>
+              </span>
               <span>Stream fallback before first payload only</span>
             </label>
             <small>Required. A stream that already sent bytes cannot be spliced to another target.</small>

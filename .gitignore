@@ -7,4 +7,4 @@
 *.dll
 .codex
 /.cpa-source/
-/cpa-model-combo
+/model-combo-v*

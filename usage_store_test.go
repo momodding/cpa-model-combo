@@ -1556,11 +1556,11 @@ func (store *usageStore) referenceUsageRecords(filter usageFilter) ([]storedUsag
 func TestAggregateRequestAttempts(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	attempts := []usageRequestCandidate{
-		{storedUsageRecord: storedUsageRecord{Sequence: 9, RequestedAt: now, Attribution: attributionRouted, RouterModel: "router", ProviderModel: "first", Source: "first-source", AccountingMode: "first-mode", Failed: true, LatencyNS: uint64(time.Second), TTFTNS: uint64(100 * time.Millisecond), InputTokens: 2, OutputTokens: 3, CacheReadTokens: 4, TotalTokens: 5}, cost: estimatedCost{Priced: true, InputUSD: 1, TotalUSD: 2}, generationNS: uint64(900 * time.Millisecond)},
-		{storedUsageRecord: storedUsageRecord{Sequence: 12, RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterModel: "router", ProviderModel: "last", Source: "last-source", AccountingMode: "last-mode", LatencyNS: uint64(2 * time.Second), TTFTNS: uint64(200 * time.Millisecond), InputTokens: 7, OutputTokens: 11, CacheReadTokens: 13, TotalTokens: 17}, cost: estimatedCost{Priced: true, OutputUSD: 3, TotalUSD: 4}, generationNS: uint64(1800 * time.Millisecond)},
+		{storedUsageRecord: storedUsageRecord{Sequence: 9, RequestedAt: now, Attribution: attributionRouted, RouterModel: "router", RouterRequestID: "request-1", ProviderModel: "first", Source: "first-source", AccountingMode: "first-mode", Failed: true, LatencyNS: uint64(time.Second), TTFTNS: uint64(100 * time.Millisecond), InputTokens: 2, OutputTokens: 3, CacheReadTokens: 4, TotalTokens: 5}, cost: estimatedCost{Priced: true, InputUSD: 1, TotalUSD: 2}, generationNS: uint64(900 * time.Millisecond)},
+		{storedUsageRecord: storedUsageRecord{Sequence: 12, RequestedAt: now.Add(time.Second), Attribution: attributionRouted, ProviderModel: "last", Source: "last-source", AccountingMode: "last-mode", LatencyNS: uint64(2 * time.Second), TTFTNS: uint64(200 * time.Millisecond), InputTokens: 7, OutputTokens: 11, CacheReadTokens: 13, TotalTokens: 17}, cost: estimatedCost{Priced: true, OutputUSD: 3, TotalUSD: 4}, generationNS: uint64(1800 * time.Millisecond)},
 	}
 	got := aggregateRequestAttempts(attempts)
-	if got.Sequence != 9 || !got.RequestedAt.Equal(now) || got.ProviderModel != "last" || got.Failed || got.Source != "" || got.AccountingMode != "" {
+	if got.Sequence != 9 || !got.RequestedAt.Equal(now) || got.ProviderModel != "last" || got.Failed || got.Source != "" || got.AccountingMode != "" || got.Attribution != attributionRouted || got.RouterModel != "router" || got.RouterRequestID != "request-1" {
 		t.Fatalf("representative = %#v", got)
 	}
 	if got.InputTokens != 9 || got.OutputTokens != 14 || got.CacheReadTokens != 17 || got.TotalTokens != 22 || got.LatencyNS != uint64(3*time.Second) || got.TTFTNS != uint64(1200*time.Millisecond) || got.generationNS != uint64(2700*time.Millisecond) {
@@ -1580,7 +1580,7 @@ func TestUsageRequestsGroupsCorrelatedRouterAttempts(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	for _, record := range []storedUsageRecord{
 		{RequestedAt: now, Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 0, ProviderModel: "first", Source: "fallback", Failed: true, StatusCode: 429, InputTokens: 2, OutputTokens: 3, TotalTokens: 5, LatencyNS: uint64(time.Second)},
-		{RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "request-1", RouterAttempt: 1, ProviderModel: "second", Source: "winner", StatusCode: 200, InputTokens: 7, OutputTokens: 11, TotalTokens: 18, LatencyNS: uint64(2 * time.Second)},
+		{RequestedAt: now.Add(time.Second), Attribution: attributionRouted, RouterRequestID: "request-1", RouterAttempt: 1, ProviderModel: "second", Source: "winner", StatusCode: 200, InputTokens: 7, OutputTokens: 11, TotalTokens: 18, LatencyNS: uint64(2 * time.Second)},
 		{RequestedAt: now.Add(2 * time.Second), Attribution: attributionRouted, RouterModel: "smart", ProviderModel: "legacy", Source: "legacy", StatusCode: 200, TotalTokens: 1},
 	} {
 		if err := store.Record(record); err != nil {
@@ -1591,7 +1591,7 @@ func TestUsageRequestsGroupsCorrelatedRouterAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 2 || len(page.Items) != 2 || page.Items[0].ProviderModel != "second" || page.Items[0].Source != "" || page.Items[0].TotalTokens != 23 || len(page.Items[0].Attempts) != 2 || page.Items[0].Attempts[0].ProviderModel != "first" || page.Items[0].Attempts[1].ProviderModel != "second" || page.Items[1].ProviderModel != "legacy" || len(page.Items[1].Attempts) != 0 {
+	if page.Total != 2 || len(page.Items) != 2 || page.Items[0].Attribution != attributionRouted || page.Items[0].RouterModel != "smart" || page.Items[0].RouterRequestID != "request-1" || page.Items[0].ProviderModel != "second" || page.Items[0].Source != "" || page.Items[0].TotalTokens != 23 || len(page.Items[0].Attempts) != 2 || page.Items[0].Attempts[0].ProviderModel != "first" || page.Items[0].Attempts[1].ProviderModel != "second" || page.Items[1].ProviderModel != "legacy" || len(page.Items[1].Attempts) != 0 {
 		t.Fatalf("logical page = %#v", page)
 	}
 	filtered, err := store.Requests(usageFilter{ProviderModel: "first", Source: "fallback"}, "time", "asc", 0, 10)

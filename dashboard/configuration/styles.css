@@ -8,11 +8,12 @@
   border: 1px solid var(--line);
   border-radius: 12px 12px 0 0;
 }
-.toggle-wrap { display: flex; align-items: center; gap: 10px; font-weight: 750; }
+.toggle-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 750; }
+.toggle-wrap .footer-hint { flex-basis: calc(100% - 52px); margin-left: 52px; }
 .toggle { position: relative; width: 42px; height: 24px; flex: 0 0 auto; }
 .toggle input { position: absolute; opacity: 0; pointer-events: none; }
-.toggle span { position: absolute; inset: 0; background: var(--toggle-off); border-radius: 99px; transition: background .16s ease; }
-.toggle span::after {
+.toggle > span { position: absolute; inset: 0; background: var(--toggle-off); border-radius: 99px; transition: background .16s ease; }
+.toggle > span::after {
   content: "";
   position: absolute;
   width: 18px;
