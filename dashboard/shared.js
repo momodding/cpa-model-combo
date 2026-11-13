@@ -22,6 +22,7 @@ const usageState={
   hiddenRequestColumns:new Set(),hiddenGroupColumns:new Set(DEFAULT_HIDDEN_GROUP_COLUMNS),hiddenTokenSeries:new Set(),zoom:{tokens:1,cost:1,efficiency:1},priceBook:null,priceDraft:null,pricingSettingsDirty:false,priceCollectionDirty:false
 };
 const requestColumns=[
+  {key:'request_id',label:'Request ID',text:true},{key:'request_endpoint',label:'API path',text:true},{key:'requested_model',label:'Requested model',text:true},
   {key:'time',label:'Time',sort:'time',text:true},{key:'router_model',label:'Router model',sort:'router_model',text:true},{key:'provider_model',label:'Provider model',sort:'provider_model',text:true},
   {key:'provider',label:'Provider',text:true},{key:'source',label:'Source',sort:'source',text:true},{key:'service_tier',label:'Service tier',sort:'service_tier',text:true},
   {key:'result',label:'Result',sort:'result',text:true},{key:'latency',label:'Latency',sort:'latency'},{key:'ttft',label:'TTFT',sort:'ttft'},{key:'tps',label:'Tokens/sec',sort:'tps'},

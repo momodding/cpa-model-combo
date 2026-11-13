@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math"
 	"net/url"
 	"sort"
@@ -9,6 +10,19 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+// HandleUsage records provider usage callbacks independently of routing execution.
+func (p *modelRouterPlugin) HandleUsage(_ context.Context, record pluginapi.UsageRecord) {
+	if p == nil || !p.config.Enabled || p.store == nil {
+		return
+	}
+	attribution := attributionResult{Kind: attributionUnresolved}
+	if p.attribution != nil {
+		attribution = p.attribution.Match(record)
+	}
+	stored := storedRecordFromUsage(record, attribution)
+	_ = p.store.Record(stored)
+}
 
 func storedRecordFromUsage(record pluginapi.UsageRecord, attribution attributionResult) storedUsageRecord {
 	requestedAt := record.RequestedAt.UTC()

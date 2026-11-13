@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -66,6 +67,7 @@ func normalizeDashboardPreferences(input dashboardPreferences) (dashboardPrefere
 	input.CustomFrom = strings.TrimSpace(input.CustomFrom)
 	input.CustomTo = strings.TrimSpace(input.CustomTo)
 	var err error
+	input.HiddenRequestColumns = removeRequiredRequestColumn(input.HiddenRequestColumns)
 	if input.HiddenRequestColumns, err = normalizeColumnList(input.HiddenRequestColumns, requestColumnFields); err != nil {
 		return dashboardPreferences{}, fmt.Errorf("hidden_request_columns: %w", err)
 	}
@@ -76,6 +78,12 @@ func normalizeDashboardPreferences(input dashboardPreferences) (dashboardPrefere
 		return dashboardPreferences{}, fmt.Errorf("hidden_token_series: %w", err)
 	}
 	return input, nil
+}
+
+func removeRequiredRequestColumn(columns []string) []string {
+	return slices.DeleteFunc(slices.Clone(columns), func(column string) bool {
+		return strings.TrimSpace(column) == "request_id"
+	})
 }
 
 func defaultAllowed(value, fallback string, allowed ...string) string {
@@ -117,7 +125,7 @@ func normalizeColumnList(input, allowed []string) ([]string, error) {
 }
 
 var requestColumnFields = []string{
-	"time", "router_model", "provider_model", "provider", "source", "service_tier", "result", "latency", "ttft", "tps",
+	"request_id", "request_endpoint", "requested_model", "time", "router_model", "provider_model", "provider", "source", "service_tier", "result", "latency", "ttft", "tps",
 	"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "cost", "api_key",
 }
 

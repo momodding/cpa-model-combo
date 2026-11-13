@@ -97,22 +97,12 @@ func (p *modelRouterPlugin) HttpRequest(_ context.Context, _ pluginapi.ExecutorH
 	return pluginapi.ExecutorHTTPResponse{}, fmt.Errorf("%s does not implement executor.http_request", pluginID)
 }
 
-func (p *modelRouterPlugin) HandleUsage(_ context.Context, record pluginapi.UsageRecord) {
-	if p == nil || !p.config.Enabled || p.store == nil {
-		return
-	}
-	attribution := attributionResult{Kind: attributionUnresolved}
-	if p.attribution != nil {
-		attribution = p.attribution.Match(record)
-	}
-	_ = p.store.Record(storedRecordFromUsage(record, attribution))
-}
-
 func (p *modelRouterPlugin) InterceptRequestBeforeAuth(_ context.Context, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	if p == nil || !p.config.Enabled || p.attribution == nil {
+	if p == nil || !p.config.Enabled {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
-	if _, routed := p.matchingRoute(request.RequestedModel); routed {
+	_, routed := p.matchingRoute(request.RequestedModel)
+	if routed || p.attribution == nil {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
 	p.attribution.MarkDirectRequest(request)

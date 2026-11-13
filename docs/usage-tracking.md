@@ -16,6 +16,8 @@ Usage tracking covers both kinds of CPA traffic:
 
 Router and provider identities must remain separate throughout storage, filtering, aggregation, pricing, and display. A routed response can be rewritten to the alias for the client without changing the stored physical provider model.
 
+Request details groups routed records by best-effort `router_request_id` attribution; direct and unattributed records are standalone. Stock CPA usage callbacks do not contain the trace identity required to reliably link provider records to inbound requests. Overview and grouped accounting count provider callbacks. Historical inbound sessions and request IDs remain readable.
+
 The feature intentionally does not include:
 
 - encryption or API-key recovery;
@@ -70,12 +72,15 @@ cpa-model-combo.db
 │   ├── prices_json
 │   └── preferences_json
 ├── requests
+├── request_sessions
 └── minute_aggregates
 ```
 
-`requests` stores request/attempt details. `minute_aggregates` stores UTC minute aggregates keyed by attribution, router model, provider model, provider, source, service tier, and result. Overview queries currently read request records so filtering and price changes are reflected consistently; the aggregate table is retained for durable minute-level accounting and future query optimization.
+`requests` stores provider usage records; `request_sessions` retains historical completed inbound request metadata. `minute_aggregates` stores UTC minute aggregates keyed by attribution, router model, provider model, provider, source, service tier, and result. Overview queries read provider records so filtering and price changes are reflected consistently.
 
 Retention pruning runs when the database opens or is reconfigured and then at most once per UTC day during writes. SQLite may retain reusable pages after deletes and WAL checkpoints, so disk planning must account for peak retained request volume, including failed routed attempts.
+
+SQLite storage schema 2 automatically migrates a schema-1 database transactionally by adding `request_sessions` and its index, preserving existing records, prices, and preferences. Back up the database consistently, including any live WAL data, before upgrading. An older plugin that supports only storage schema 1 cannot open the upgraded schema-2 database; rollback requires restoring a pre-upgrade backup or using a separate database, and restoring a backup discards later history. Historical records are not backfilled with guessed request IDs.
 
 ### v0.3 to v0.4 migration
 
@@ -90,11 +95,11 @@ rm -f -- "<data_path>.migration-v1.json" "<data_path>.sqlite-v1.migrating"
 
 The backup is the original bbolt file and must not be overwritten with an unverified copy.
 
-**Reset usage** deletes and recreates only `requests` and `minute_aggregates`. It preserves model pricing and dashboard preferences in `store_state`.
+**Reset usage** deletes rows from `requests`, `request_sessions`, and `minute_aggregates`. It preserves model pricing and dashboard preferences in `store_state`.
 
 ## CPA usage delivery and attribution
 
-CPA's `usage_plugin` callback is the sole usage source. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Router does not parse response bodies or stream chunks for usage and does not persist a fallback record.
+CPA's `usage_plugin` callbacks are the sole source of provider accounting. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Router does not parse response bodies or stream chunks for usage and does not persist a fallback usage record. Stock CPA v7.3.9 advertises plugin RPC schema 6; the plugin negotiates schema 3. CPA can deliver lifecycle completion (introduced in schema 2), but the plugin does not register for lifecycle events, and stock usage callbacks lack trace identity for reliable correlation to an inbound request.
 
 ```text
 request starts
@@ -110,6 +115,8 @@ CPA usage.handle callback --> correlate marker and store one request row
 Correlation uses request time, provider model, and an in-memory keyed fingerprint of the client credential when available. The fingerprint secret is random for the process and is never persisted. A uniquely matched marker is consumed. Conflicting candidates and timestamp-less callbacks with multiple active candidates are not guessed; the delivered record is retained as `unattributed`. Markers expire after 24 hours and are capped at 50,000 entries.
 
 CPA v7.3.9 or newer is required. That release preserves numeric HTTP statuses returned through native model callbacks, which lets Model Router apply its configured fallback rules. CPA v7.2.143 also detached asynchronous native usage delivery from request cancellation while preserving context values. CPA v7.2.142 and older can cancel `usage.handle` before Model Router receives it; the plugin does not recreate missing records from response bodies.
+
+For new records, routed attempts with a best-effort `router_request_id` group together; direct and unattributed records are standalone. These groups do not establish an exact inbound request hierarchy. Historical request IDs and sessions remain readable and are not inferred for records that lack them.
 
 Routed stream retry behavior is unchanged: an attempt can fail over only before any upstream payload is emitted. CPA remains responsible for stream timing and usage totals.
 
@@ -127,12 +134,15 @@ Each request row can contain:
 - a short masked API-key display value;
 - an estimated USD cost resolved at query time.
 
+Historical provider records may carry an inbound `request_id` and `request_endpoint` (for example `POST /v1/chat/completions`). A historical lifecycle session can contain its request ID, endpoint, requested and router models, attribution, stream flag, outcome, status, start/end times, and latency. Stock CPA usage callbacks do not supply the identity needed to join new provider records reliably to such sessions. The plugin does not add query strings or bodies to stored endpoints.
+
 The plugin does not persist:
 
 - raw API keys or credential fingerprints;
 - prompts or request bodies;
 - model response bodies;
 - failure bodies;
+- request URL query strings or lifecycle completion errors;
 - response headers.
 
 CPA can place an API key in `UsageRecord.Source`. For API-key authentication, source values equal to the API key, values with common credential prefixes, and token-shaped strings with at least eight characters fall back to a provider/executor label. HTTP(S) sources retain only scheme, host, port, and path; URL user info, query strings, and fragments are removed.
@@ -175,11 +185,15 @@ The Usage tracking tab includes:
 - model pricing and models.dev sync;
 - an explicit typed confirmation for history reset.
 
+Request details shows **Request ID**, **API path**, and **Requested model**, when available. Request ID is always visible and is removed from saved hidden-column preferences. Expansion state uses `id:<request_id>` or `legacy:<sequence>` for rows without an ID. New stock CPA usage records cannot be reliably joined to an inbound request ID; historical sessions can still be displayed.
+
+Children sharing one non-empty `router_request_id` sort by `router_attempt`, `requested_at`, then `sequence`; otherwise they sort by `requested_at`, then `sequence`. Historical lifecycle fields can supply the parent result and end-to-end latency.
+
 The token chart keeps cache-read and separately reported reasoning segments mutually exclusive with their parent counters according to each record's accounting mode, including when one time bucket mixes providers with different accounting conventions.
 
 All four charts expose a viewport-clamped tooltip on pointer hover or keyboard focus. Arrow keys and Home/End move between buckets or provider segments; Escape dismisses the active readout. Token tooltips show visible token series, the visible total, request count, and estimated cost. Cost and efficiency tooltips show the values represented by their lines. Provider-share tooltips show requests, share, tokens, and cost. Clicking an exact provider segment or legend entry, or pressing Enter/Space on a focused segment, toggles the existing provider-model filter. The aggregate Other segment is inspectable but not filterable.
 
-The browser loads overview, groups, and request details through one dashboard query. All three use one SQLite read snapshot and one price-book revision. The query streams matching records into summaries and groups instead of retaining the full history in memory. Unfiltered, time-sorted request pages use the existing timestamp/sequence index; other request sorts retain only the pagination prefix needed to select the requested page. Dimensional filters still scan their selected time window. These paths apply to every range and granularity.
+The browser loads overview, groups, and request details through one dashboard query. All three use one SQLite read snapshot and one price-book revision. Overview and group queries scan matching provider records; request details scans provider records and sessions to construct and filter complete parents before sorting and pagination.
 
 Range and filter changes are debounced for 250 ms. Changing granularity refreshes only overview; sorting, grouping, and pagination refresh only the affected table. Partial refreshes reuse the displayed time interval. When another change overlaps unfinished work, the latest state receives a complete refresh. Existing metrics, charts, and rows stay mounted during a refresh. Each refresh owns an `AbortController` and generation number; only the newest active generation can render. Browser cancellation does not cancel native query execution. Table scroll positions are restored after row replacement.
 
@@ -191,7 +205,7 @@ AND the document is visible
 AND no newer refresh has replaced the timer
 ```
 
-Leaving the tab or hiding the document stops the timer and aborts the active request. Returning starts one fresh request set. Dashboard preferences are saved to SQLite after a short debounce. Both tables default to 50 rows. Router model, Provider, Source, Service tier, and Result are hidden by default in Usage breakdown; every column checkbox change updates `hidden_group_columns`. Existing saved selections, including an empty hidden list or a saved page size, remain authoritative. Request-detail columns keep their existing defaults.
+Leaving the tab or hiding the document stops the timer and aborts the active request. Returning starts one fresh request set. Dashboard preferences are saved to SQLite after a short debounce. Both tables default to 50 rows. Router model, Provider, Source, Service tier, and Result are hidden by default in Usage breakdown; every column checkbox change updates `hidden_group_columns`. Existing saved selections, including an empty hidden list or a saved page size, remain authoritative, except that Request ID cannot be hidden.
 
 The page follows CPAMC light, white, and dark themes, redraws canvas charts after theme changes, supports keyboard tab and chart navigation, exposes visible focus states, fits metric values without ellipses, and collapses controls and charts for mobile widths. Token trends use packet-style columns, cost and efficiency use halo lines, and provider share uses a gapped donut. Hover and keyboard focus share the same active treatment: packet buckets widen and gain a marker, lines gain a guide and enlarged halo markers, and donut segments lift while peers dim. Successful request results use green pills. Saving valid model pricing closes the modal after the persisted price book is applied; validation or request failures leave it open.
 
@@ -214,7 +228,9 @@ All endpoints require CPA Management API authentication.
 
 Overview, group, and request queries accept RFC3339 `from` and `to` plus optional `attribution`, `router_model`, `provider_model`, `source`, `service_tier`, and `result` filters. `router_model` always matches a literal route alias. Use `attribution=direct`, `attribution=unattributed`, or `attribution=routed` to filter by request origin; this keeps aliases named `direct` or `unattributed` distinct from the synthetic traffic classes. Group and request endpoints also accept `sort`, `order`, `offset`, and `limit`; the maximum page size is 500.
 
-The dashboard endpoint accepts the same filters and `granularity`, plus `group_dimension`, `group_sort`, `group_order`, `group_offset`, `group_limit`, `request_sort`, `request_order`, `request_offset`, and `request_limit`. Defaults and limits match the individual endpoints. It returns `overview`, `groups`, and `requests`, with a shared `generated_at`, `schema_version`, and `price_book_revision` on the outer response. Existing endpoints retain their response formats.
+The dashboard endpoint accepts the same filters and `granularity`, plus `group_dimension`, `group_sort`, `group_order`, `group_offset`, `group_limit`, `request_sort`, `request_order`, `request_offset`, and `request_limit`. Defaults and limits match the individual endpoints. It returns `overview`, `groups`, and `requests`, with a shared `generated_at`, `schema_version`, and `price_book_revision` on the outer response. Usage overview, group, request, and dashboard responses use management `schema_version: 2`, distinct from CPA plugin RPC schema and SQLite storage schema 2.
+
+Request-page `items` are parents, and `total` counts matching parents rather than provider callbacks. Parent details include `request_id`, `request_endpoint`, `requested_model`, `stream`, `result`, `status_code`, and `latency_ns` when available; `attempts` contains provider details and `attempt_count` reports their number when nonzero. Identity and attempt fields may be omitted when unavailable. Parent token and estimated cost values aggregate children. Parent time, attribution, router-model, and result filters apply to the parent; provider-model, source, and service-tier filters match any one child. Zero-child parents do not match those child-specific filters.
 
 ## Implementation map
 
@@ -266,7 +282,7 @@ Then install the built library in a disposable CPA instance and verify:
 
 1. Configuration is the default tab and keyboard tab navigation works.
 2. Routed and direct streaming and non-streaming requests remain distinct, and every delivered CPA usage record appears once.
-3. A failed routed target appears separately from the successful retry.
+3. Routed attempts are grouped only when their best-effort attribution supplies the same router request ID; do not assume stock CPA provides an exact inbound request hierarchy. Overview and groups count delivered provider callbacks.
 4. Refresh keeps old values and scroll positions visible while requests are pending.
 5. Every chart tooltip and highlight works with pointer and keyboard input, including after zoom, resize, refresh, and theme changes.
 6. Metrics show their complete values without ellipses at desktop, tablet, and mobile widths.

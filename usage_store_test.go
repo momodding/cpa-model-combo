@@ -259,6 +259,124 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 }
 
+func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	database, err := sql.Open("sqlite3", sqliteDSN(path, "WAL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Minute)
+	payload, err := json.Marshal(storedUsageRecord{Sequence: 7, RequestedAt: now, Attribution: attributionDirect, ProviderModel: "v1-model", TotalTokens: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE store_state (id INTEGER PRIMARY KEY CHECK (id = 1), storage_schema_version INTEGER NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 0, last_prune_day TEXT, prices_json BLOB, preferences_json BLOB)`,
+		`CREATE TABLE requests (sequence INTEGER PRIMARY KEY, requested_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX requests_requested_at_sequence ON requests(requested_at_ns, sequence)`,
+		`CREATE TABLE minute_aggregates (key BLOB PRIMARY KEY, minute_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX minute_aggregates_minute ON minute_aggregates(minute_ns)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO store_state(id, storage_schema_version, next_sequence, prices_json, preferences_json) VALUES (1, 1, 7, ?, ?)`, []byte(`{"prices":"kept"}`), []byte(`{"prefs":"kept"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO requests(sequence, requested_at_ns, payload) VALUES (7, ?, ?)`, now.UnixNano(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var version, sequence int
+	var prices, preferences []byte
+	if err := store.db.QueryRow(`SELECT storage_schema_version, next_sequence, prices_json, preferences_json FROM store_state WHERE id = 1`).Scan(&version, &sequence, &prices, &preferences); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
+		t.Fatalf("migrated state = %d/%d/%s/%s", version, sequence, prices, preferences)
+	}
+	var stored []byte
+	if err := store.db.QueryRow(`SELECT payload FROM requests WHERE sequence = 7`).Scan(&stored); err != nil || !bytes.Equal(stored, payload) {
+		t.Fatalf("migrated request = %s, %v", stored, err)
+	}
+	var indexes int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'request_sessions_started_at'`).Scan(&indexes); err != nil || indexes != 1 {
+		t.Fatalf("request_sessions index count = %d, %v", indexes, err)
+	}
+	if err := store.RecordSession(storedRequestSession{RequestID: "1234", StartedAt: now, CompletedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening a v2 database must not repeat the migration.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+}
+
+func TestUsageStoreRequestSessionUpsertRetentionAndReset(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC().Add(-time.Minute)
+	session := storedRequestSession{
+		RequestID: "1234", Endpoint: "POST /v1/chat/completions", RequestedModel: "auto", RouterModel: "auto", Attribution: attributionRouted,
+		Stream: true, Outcome: "failure", StatusCode: 502, StartedAt: now, CompletedAt: now.Add(time.Second), LatencyNS: uint64(time.Second),
+	}
+	if err := store.RecordSession(session); err != nil {
+		t.Fatal(err)
+	}
+	session.Outcome, session.StatusCode = "success", 200
+	if err := store.RecordSession(session); err != nil {
+		t.Fatal(err)
+	}
+	old := session
+	old.RequestID = "old"
+	old.StartedAt = now.AddDate(0, 0, -31)
+	if err := store.RecordSession(old); err != nil {
+		t.Fatal(err)
+	}
+	read := func() []storedRequestSession {
+		var sessions []storedRequestSession
+		if err := store.readSnapshot(func(connection *sql.Conn, _ int) error {
+			return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return sessions
+	}
+	// Write-time pruning runs once per day, so the expired session is still present until forced retention.
+	if sessions := read(); len(sessions) != 2 || sessions[1].RequestID != "1234" || sessions[1].Outcome != "success" || sessions[1].StatusCode != 200 || !sessions[1].StartedAt.Equal(now) {
+		t.Fatalf("sessions after upsert = %#v", sessions)
+	}
+	if err := pruneSQLiteDatabase(store.db, 30, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := read(); len(sessions) != 1 || sessions[0].RequestID != "1234" {
+		t.Fatalf("sessions after forced retention = %#v", sessions)
+	}
+	if err := store.ResetUsage(); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := read(); len(sessions) != 0 {
+		t.Fatalf("sessions after reset = %#v", sessions)
+	}
+}
+
 func TestDashboardPreferenceColumnDefaults(t *testing.T) {
 	want := []string{"provider", "result", "router_model", "service_tier", "source"}
 	defaults := defaultDashboardPreferences()
@@ -282,6 +400,44 @@ func TestDashboardPreferenceColumnDefaults(t *testing.T) {
 	normalized, err = normalizeDashboardPreferences(explicit)
 	if err != nil || len(normalized.HiddenGroupColumns) != 0 {
 		t.Fatalf("normalized explicit visible columns = %#v, %v", normalized.HiddenGroupColumns, err)
+	}
+}
+
+func TestDashboardPreferencesNeverHideRequiredRequestID(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	input := defaultDashboardPreferences()
+	input.HiddenRequestColumns = []string{"time", "request_id", " request_id "}
+	saved, err := store.SavePreferences(input)
+	if err != nil || !slices.Equal(saved.HiddenRequestColumns, []string{"time"}) {
+		t.Fatalf("saved hidden request columns = %#v, %v; want [time]", saved.HiddenRequestColumns, err)
+	}
+	// Hiding every other column is valid because Request ID always stays visible.
+	input.HiddenRequestColumns = slices.Clone(requestColumnFields)
+	if saved, err = store.SavePreferences(input); err != nil || slices.Contains(saved.HiddenRequestColumns, "request_id") || len(saved.HiddenRequestColumns) != len(requestColumnFields)-1 {
+		t.Fatalf("saved all-hidden request columns = %#v, %v", saved.HiddenRequestColumns, err)
+	}
+	var persisted []byte
+	if err := store.db.QueryRow(`SELECT preferences_json FROM store_state WHERE id = 1`).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	var decoded dashboardPreferences
+	if err := json.Unmarshal(persisted, &decoded); err != nil || slices.Contains(decoded.HiddenRequestColumns, "request_id") || len(decoded.HiddenRequestColumns) != len(requestColumnFields)-1 {
+		t.Fatalf("persisted preferences = %#v, %v", decoded, err)
+	}
+
+	// Preferences persisted before Request ID became required must be normalized on load.
+	legacy := `{"request_page_size":25,"hidden_request_columns":["request_id","cost"]}`
+	if _, err := store.db.Exec(`UPDATE store_state SET preferences_json = ? WHERE id = 1`, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.QueryPreferences()
+	if err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, []string{"cost"}) {
+		t.Fatalf("loaded legacy preferences = %#v, %v; want hidden [cost]", loaded, err)
 	}
 }
 
@@ -1261,7 +1417,7 @@ func (store *usageStore) referenceUsageOverview(filter usageFilter, granularity 
 	resolver := newModelPriceResolver(book.Prices, book.SyncSettings)
 	now := time.Now().UTC()
 	overview := usageOverview{
-		SchemaVersion: usageSchemaVersion,
+		SchemaVersion: usageManagementSchemaVersion,
 		GeneratedAt:   now,
 		From:          filter.From,
 		To:            filter.To,
@@ -1431,7 +1587,7 @@ func (store *usageStore) referenceUsageGroups(filter usageFilter, dimension, sor
 	})
 	total := len(items)
 	items = paginateGroups(items, offset, limit)
-	return usageGroupPage{SchemaVersion: usageSchemaVersion, GeneratedAt: time.Now().UTC(), Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}, nil
+	return usageGroupPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: time.Now().UTC(), Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}, nil
 }
 
 func (store *usageStore) referenceUsageRequests(filter usageFilter, sortField, order string, offset, limit int) (usageRequestPage, error) {
@@ -1468,7 +1624,7 @@ func (store *usageStore) referenceUsageRequests(filter usageFilter, sortField, o
 		}
 		items = items[offset:end]
 	}
-	return usageRequestPage{SchemaVersion: usageSchemaVersion, GeneratedAt: time.Now().UTC(), PriceBookRevision: book.Revision, Total: total, Offset: offset, Limit: limit, Items: items}, nil
+	return usageRequestPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: time.Now().UTC(), PriceBookRevision: book.Revision, Total: total, Offset: offset, Limit: limit, Items: items}, nil
 }
 
 func compareReferenceRequests(left, right usageRequestDetail, field string) int {
@@ -1601,5 +1757,132 @@ func TestUsageRequestsGroupsCorrelatedRouterAttempts(t *testing.T) {
 	paged, err := store.Requests(usageFilter{}, "time", "asc", 1, 1)
 	if err != nil || paged.Total != 2 || len(paged.Items) != 1 || paged.Items[0].ProviderModel != "legacy" {
 		t.Fatalf("logical pagination = %#v, %v", paged, err)
+	}
+}
+
+func TestUsageRequestsExactRequestParents(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	start := time.Now().UTC().Add(-time.Minute)
+	if _, err := store.SavePriceBook(saveModelPricesRequest{Prices: map[string]modelPrice{
+		"gpt5.6-sol":        {tokenRates: tokenRates{Input: 1, Output: 2}},
+		"claude-sonnet-5.5": {tokenRates: tokenRates{Input: 1, Output: 2}},
+	}}, start); err != nil {
+		t.Fatal(err)
+	}
+	children := []storedUsageRecord{
+		{RequestID: "1234", RequestEndpoint: "POST /v1/chat/completions", RequestedAt: start.Add(2 * time.Second), Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "route", RouterAttempt: 1, ProviderModel: "claude-sonnet-5.5", StatusCode: 200, InputTokens: 7, OutputTokens: 11, TotalTokens: 18},
+		{RequestID: "1234", RequestEndpoint: "POST /v1/chat/completions", RequestedAt: start.Add(time.Second), Attribution: attributionRouted, RouterModel: "smart", RouterRequestID: "route", RouterAttempt: 0, ProviderModel: "gpt5.6-sol", Source: "fallback", Failed: true, StatusCode: 429, InputTokens: 2, OutputTokens: 3, TotalTokens: 5},
+	}
+	for _, child := range children {
+		if err := store.Record(child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := storedRequestSession{RequestID: "1234", Endpoint: "/v1/chat/completions", RequestedModel: "smart", RouterModel: "smart", Attribution: attributionRouted, Stream: true, Outcome: string(pluginapi.RequestCompletionSucceeded), StatusCode: 200, StartedAt: start, LatencyNS: uint64(3 * time.Second)}
+	if err := store.RecordSession(session); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil || page.SchemaVersion != 2 || page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	parent := page.Items[0]
+	if parent.RequestID != "1234" || parent.RequestEndpoint != "POST /v1/chat/completions" || parent.RequestedModel != "smart" || !parent.Stream || parent.Result != "success" || parent.StatusCode != 200 || parent.LatencyNS != uint64(3*time.Second) || parent.TotalTokens != 23 || parent.ProviderModel != "" || parent.Source != "" || len(parent.Attempts) != 2 || parent.AttemptCount != 2 {
+		t.Fatalf("parent = %#v", parent)
+	}
+	if parent.Attempts[0].ProviderModel != "gpt5.6-sol" || parent.Attempts[0].StatusCode != 429 || parent.Attempts[1].ProviderModel != "claude-sonnet-5.5" || parent.Attempts[1].StatusCode != 200 || parent.EstimatedCost == nil || !parent.EstimatedCost.Priced || parent.EstimatedCost.TotalUSD != parent.Attempts[0].EstimatedCost.TotalUSD+parent.Attempts[1].EstimatedCost.TotalUSD {
+		t.Fatalf("attempts/cost = %#v", parent)
+	}
+	filtered, err := store.Requests(usageFilter{ProviderModel: "gpt5.6-sol", Source: "fallback", Result: "success", RouterModel: "smart", From: start, To: start.Add(time.Second)}, "time", "asc", 0, 10)
+	if err != nil || filtered.Total != 1 || len(filtered.Items[0].Attempts) != 2 {
+		t.Fatalf("filtered = %#v, %v", filtered, err)
+	}
+	overview, err := store.Overview(usageFilter{}, "hour")
+	if err != nil || overview.Summary.Requests != 2 || overview.Summary.TotalTokens != 23 || overview.Costs.Requests != 2 {
+		t.Fatalf("overview = %#v, %v", overview, err)
+	}
+	groups, err := store.Groups(usageFilter{}, "provider_model", "total_tokens", "desc", 0, 10)
+	if err != nil || len(groups.Items) != 2 || groups.Items[0].Requests+groups.Items[1].Requests != 2 || groups.Items[0].TotalTokens+groups.Items[1].TotalTokens != 23 {
+		t.Fatalf("groups = %#v, %v", groups, err)
+	}
+}
+
+func TestUsageRequestsSessionAndEarlyUsage(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	start := time.Now().UTC().Add(-time.Minute)
+	for _, id := range []string{"early-a", "early-b"} {
+		if err := store.Record(storedUsageRecord{RequestID: id, RequestEndpoint: "POST /same", RequestedAt: start, Attribution: attributionDirect, ProviderModel: "same", TotalTokens: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecordSession(storedRequestSession{RequestID: "empty", Endpoint: "/route", RequestedModel: "smart", Attribution: attributionRouted, RouterModel: "smart", Outcome: string(pluginapi.RequestCompletionRejected), StatusCode: 429, StartedAt: start}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil || page.Total != 3 || len(page.Items) != 3 {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	byID := make(map[string]usageRequestDetail)
+	for _, item := range page.Items {
+		byID[item.RequestID] = item
+	}
+	for _, id := range []string{"early-a", "early-b"} {
+		if item := byID[id]; item.RequestEndpoint != "POST /same" || item.Attribution != attributionDirect || len(item.Attempts) != 1 || item.TotalTokens != 3 {
+			t.Fatalf("early parent %s = %#v", id, item)
+		}
+	}
+	if empty := byID["empty"]; empty.RequestEndpoint != "/route" || empty.Result != "http_429" || empty.RequestedModel != "smart" || len(empty.Attempts) != 0 || empty.TotalTokens != 0 {
+		t.Fatalf("zero-child parent = %#v", empty)
+	}
+	filtered, err := store.Requests(usageFilter{ProviderModel: "same"}, "time", "asc", 0, 1)
+	if err != nil || filtered.Total != 2 || len(filtered.Items) != 1 || filtered.Items[0].RequestID == "empty" {
+		t.Fatalf("filtered page = %#v, %v", filtered, err)
+	}
+	if err := store.RecordSession(storedRequestSession{RequestID: "early-a", Endpoint: "/same", RequestedModel: "original", Attribution: attributionDirect, Outcome: string(pluginapi.RequestCompletionSucceeded), StatusCode: 200, StartedAt: start}); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.Requests(usageFilter{ProviderModel: "same"}, "time", "asc", 0, 10)
+	if err != nil || completed.Total != 2 || len(completed.Items) != 2 || completed.Items[0].RequestID != "early-a" || completed.Items[0].RequestedModel != "original" || completed.Items[0].RequestEndpoint != "POST /same" {
+		t.Fatalf("completed = %#v, %v", completed, err)
+	}
+}
+
+func TestUsageRequestsMixedRouterChildrenOrder(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	start := time.Now().UTC().Add(-time.Minute)
+	for _, child := range []storedUsageRecord{
+		{RequestID: "parent", RequestedAt: start.Add(time.Second), Attribution: attributionRouted, RouterRequestID: "route-a", RouterAttempt: 9, ProviderModel: "tie-first"},
+		{RequestID: "parent", RequestedAt: start.Add(time.Second), Attribution: attributionRouted, RouterRequestID: "route-b", RouterAttempt: 0, ProviderModel: "tie-second"},
+		{RequestID: "parent", RequestedAt: start, Attribution: attributionRouted, RouterRequestID: "route-a", RouterAttempt: 10, ProviderModel: "earliest"},
+		{RequestID: "parent", RequestedAt: start.Add(2 * time.Second), Attribution: attributionRouted, RouterAttempt: -1, ProviderModel: "latest"},
+	} {
+		if err := store.Record(child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil || page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	parent := page.Items[0]
+	if parent.RequestID != "parent" || parent.RouterRequestID != "" || parent.AttemptCount != 4 || len(parent.Attempts) != 4 {
+		t.Fatalf("parent = %#v", parent)
+	}
+	for i, want := range []string{"earliest", "tie-first", "tie-second", "latest"} {
+		if parent.Attempts[i].ProviderModel != want {
+			t.Fatalf("ordered attempts = %#v", parent.Attempts)
+		}
 	}
 }

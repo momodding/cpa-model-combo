@@ -196,36 +196,62 @@ test('dashboard tabs retain their browser interactions after source assembly', {
 
     let requestCalls = 0;
     const requestPage = {
-      schema_version: 1, generated_at: new Date().toISOString(), price_book_revision: 0, total: 2, offset: 0, limit: 50,
+      schema_version: 2, generated_at: new Date().toISOString(), price_book_revision: 0, total: 4, offset: 0, limit: 50,
       items: [
-        { sequence: 101, requested_at: '2026-01-01T00:00:00Z', router_request_id: 'tree-request', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 3000000000, attempts: [
-          { requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-a', result: 'failed', latency_ns: 1000000000 },
+        { sequence: 101, request_id: '1234', request_endpoint: 'POST /v1/chat/completions', requested_model: 'route-a', requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 3000000000, attempts: [
+          { requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-a', result: 'http_429', latency_ns: 1000000000 },
           { requested_at: '2026-01-01T00:00:01Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 2000000000 },
         ] },
-        { sequence: 102, requested_at: '2026-01-01T00:00:02Z', router_model: 'direct', provider_model: 'provider-c', result: 'success', latency_ns: 1000000000 },
+        { sequence: 102, request_id: '5678', request_endpoint: 'POST /v1/responses', requested_model: 'provider-c', requested_at: '2026-01-01T00:00:02Z', attribution: 'direct', provider_model: 'provider-c', result: 'success', latency_ns: 1000000000, attempts: [
+          { requested_at: '2026-01-01T00:00:02Z', attribution: 'direct', provider_model: 'provider-c', result: 'success', latency_ns: 1000000000 },
+        ] },
+        { sequence: 103, requested_at: '2026-01-01T00:00:03Z', attribution: 'direct', provider_model: 'provider-d', result: 'success', latency_ns: 1000000000 },
+        { sequence: 104, router_request_id: 'legacy-router', router_model: 'old-route', result: 'success', attempts: [
+          { provider_model: 'old-provider', result: 'success' },
+        ] },
       ],
     };
     const requestRoute = async (route) => { requestCalls++; await route.fulfill({ contentType: 'application/json', body: JSON.stringify(requestPage) }); };
     await page.route('**/usage/requests?**', requestRoute);
     await page.locator('#request-page-size').selectOption('50');
     await waitForUsageReady(page);
-    const toggle = page.getByRole('button', { name: 'Expand attempts for route-a' });
-    assert.equal(await page.locator('#usage-requests > tr').count(), 4);
-    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
-    assert.equal(await page.locator('#request-page-status').textContent(), '1–2 of 2 requests');
+    const toggle = page.getByRole('button', { name: 'Expand provider attempts for request 1234' });
+    assert.deepEqual(await page.locator('#request-headers th').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['Request ID', 'API path', 'Requested model']);
+    assert.equal(await page.locator('#usage-requests > tr').count(), 8);
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 4);
+    assert.equal(await page.locator('#request-page-status').textContent(), '1–4 of 4 requests');
     assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
     const controls = (await toggle.getAttribute('aria-controls')).split(' ');
-    assert.deepEqual(controls, ['request-attempt-101-0', 'request-attempt-101-1']);
+    assert.equal(controls.length, 2);
     assert.deepEqual(await Promise.all(controls.map((id) => page.locator('#' + id).count())), [1, 1]);
+    assert.equal(await page.getByRole('button', { name: 'Expand provider attempts for request 5678' }).count(), 1, 'direct request with one provider child is expandable');
+    assert.equal(await page.locator('.request-parent-row').nth(2).locator('button').count(), 0, 'legacy standalone row has no children to expand');
+    assert.equal(await page.getByRole('button', { name: 'Expand provider attempts for request sequence 104' }).count(), 1, 'legacy grouped request uses sequence fallback');
+    assert.deepEqual(await page.locator('.request-parent-row').first().locator('td').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['›1234', 'POST /v1/chat/completions', 'route-a']);
     await toggle.click();
-    assert.equal(await page.getByRole('button', { name: 'Collapse attempts for route-a' }).getAttribute('aria-expanded'), 'true');
-    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 0);
-    assert.deepEqual(await page.locator('.request-attempt-row td:nth-child(3)').allTextContents(), ['provider-a', 'provider-b']);
-    assert.equal(requestCalls, 1, 'tree toggle should not refetch requests');
-    await page.locator('#request-column-options input[data-column-key="time"]').uncheck();
-    assert.equal(await page.getByRole('button', { name: 'Collapse attempts for route-a' }).getAttribute('aria-expanded'), 'true');
-    await page.getByRole('button', { name: 'Collapse attempts for route-a' }).click();
+    const expandedToggle = page.getByRole('button', { name: 'Collapse provider attempts for request 1234' });
+    assert.equal(await expandedToggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(await expandedToggle.evaluate((element) => element === document.activeElement), true, 'toggle keeps focus after rerender');
+    assert.equal(await page.locator('#' + controls[0]).isVisible(), true);
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
+    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('td:nth-child(1)').allTextContents(), ['Attempt 1', 'Attempt 2']);
+    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('td:nth-child(6)').allTextContents(), ['provider-a', 'provider-b']);
+    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('.status-pill').allTextContents(), ['HTTP 429', 'Success']);
+    assert.equal(await page.locator('.request-parent-row').first().locator('.status-pill').textContent(), 'Success');
+    assert.equal(requestCalls, 1, 'tree toggle should not refetch requests');
+    requestPage.items[0].sequence = 999;
+    await page.locator('#usage-refresh').click();
+    await waitForUsageReady(page);
+    assert.equal(requestCalls, 2);
+    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true', 'expansion persists across refresh');
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
+    await page.locator('#request-column-options input[data-column-key="time"]').uncheck();
+    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.locator('#request-column-options input[data-column-key="request_id"]').isDisabled(), true);
+    await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).click();
+    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 4);
+    await page.getByRole('button', { name: 'Expand provider attempts for request sequence 104' }).click();
+    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request sequence 104' }).getAttribute('aria-expanded'), 'true');
     await page.unroute('**/usage/requests?**', requestRoute);
 
     await page.setViewportSize({ width: 1440, height: 900 });
