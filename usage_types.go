@@ -61,6 +61,8 @@ type storedUsageRecord struct {
 	CacheReadTokens     uint64    `json:"cache_read_tokens"`
 	CacheCreationTokens uint64    `json:"cache_creation_tokens"`
 	TotalTokens         uint64    `json:"total_tokens"`
+	RequestID           string    `json:"request_id,omitempty"`
+	RequestEndpoint     string    `json:"request_endpoint,omitempty"`
 }
 
 func (record storedUsageRecord) result() string {

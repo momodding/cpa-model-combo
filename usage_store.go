@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	usageStorageSchemaVersion = 1
+	usageStorageSchemaVersion = 2
 	sqliteBusyTimeoutMS       = 5000
 )
 
@@ -32,6 +32,20 @@ type usageStore struct {
 	retentionDays int
 	errorMu       sync.RWMutex
 	lastError     string
+}
+
+type storedRequestSession struct {
+	RequestID      string    `json:"request_id"`
+	Endpoint       string    `json:"endpoint"`
+	RequestedModel string    `json:"requested_model"`
+	RouterModel    string    `json:"router_model"`
+	Attribution    string    `json:"attribution"`
+	Stream         bool      `json:"stream"`
+	Outcome        string    `json:"outcome"`
+	StatusCode     int       `json:"status_code"`
+	StartedAt      time.Time `json:"started_at"`
+	CompletedAt    time.Time `json:"completed_at"`
+	LatencyNS      uint64    `json:"latency_ns"`
 }
 
 type minuteAggregate struct {
@@ -233,7 +247,7 @@ func initializeSQLiteDatabase(database *sql.DB) error {
 	}
 	for index, statement := range statements {
 		if index == len(statements)-1 {
-			if _, err := database.Exec(statement, usageStorageSchemaVersion); err != nil {
+			if _, err := database.Exec(statement, 1); err != nil {
 				return fmt.Errorf("initialize SQLite state: %w", err)
 			}
 			continue
@@ -249,7 +263,25 @@ func initializeSQLiteDatabase(database *sql.DB) error {
 	if version > usageStorageSchemaVersion {
 		return fmt.Errorf("usage database storage schema %d is newer than supported schema %d", version, usageStorageSchemaVersion)
 	}
-	if version < usageStorageSchemaVersion {
+	if version == 1 {
+		transaction, err := database.Begin()
+		if err != nil {
+			return fmt.Errorf("begin SQLite storage migration: %w", err)
+		}
+		defer transaction.Rollback()
+		for _, statement := range []string{
+			`CREATE TABLE request_sessions (request_id TEXT PRIMARY KEY, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+			`CREATE INDEX request_sessions_started_at ON request_sessions(started_at_ns)`,
+			`UPDATE store_state SET storage_schema_version = 2 WHERE id = 1`,
+		} {
+			if _, err := transaction.Exec(statement); err != nil {
+				return fmt.Errorf("migrate SQLite storage schema: %w", err)
+			}
+		}
+		if err := transaction.Commit(); err != nil {
+			return fmt.Errorf("commit SQLite storage migration: %w", err)
+		}
+	} else if version != usageStorageSchemaVersion {
 		return fmt.Errorf("usage database storage schema %d requires an unsupported migration", version)
 	}
 	return nil
@@ -311,6 +343,35 @@ func (store *usageStore) Record(record storedUsageRecord) error {
 	if err != nil {
 		store.recordError(err)
 		log.Printf("model-router: persist usage: %v", err)
+	} else {
+		store.clearError()
+	}
+	return err
+}
+
+func (store *usageStore) RecordSession(session storedRequestSession) error {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.db == nil {
+		return errors.New("usage database is closed")
+	}
+	value, err := json.Marshal(session)
+	if err == nil {
+		var transaction *sql.Tx
+		transaction, err = store.db.Begin()
+		if err == nil {
+			defer transaction.Rollback()
+			_, err = transaction.Exec(`INSERT INTO request_sessions(request_id, started_at_ns, payload) VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET started_at_ns = excluded.started_at_ns, payload = excluded.payload`, session.RequestID, session.StartedAt.UTC().UnixNano(), value)
+			if err == nil {
+				err = pruneSQLiteTransaction(transaction, store.retentionDays, time.Now().UTC(), false)
+			}
+			if err == nil {
+				err = transaction.Commit()
+			}
+		}
+	}
+	if err != nil {
+		store.recordError(err)
 	} else {
 		store.clearError()
 	}
@@ -385,6 +446,9 @@ func pruneSQLiteTransaction(transaction *sql.Tx, retentionDays int, now time.Tim
 	}
 	cutoff := now.UTC().AddDate(0, 0, -retentionDays).UnixNano()
 	if _, err := transaction.Exec(`DELETE FROM requests WHERE requested_at_ns < ?`, cutoff); err != nil {
+		return err
+	}
+	if _, err := transaction.Exec(`DELETE FROM request_sessions WHERE started_at_ns < ?`, cutoff); err != nil {
 		return err
 	}
 	if _, err := transaction.Exec(`DELETE FROM minute_aggregates WHERE minute_ns < ?`, cutoff); err != nil {
@@ -468,6 +532,26 @@ func scanUsageRecords(connection *sql.Conn, filter usageFilter, visit func(store
 	return rows.Err()
 }
 
+func scanRequestSessions(connection *sql.Conn, visit func(storedRequestSession)) error {
+	rows, err := connection.QueryContext(context.Background(), `SELECT payload FROM request_sessions ORDER BY started_at_ns, request_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value sql.RawBytes
+		if err := rows.Scan(&value); err != nil {
+			return err
+		}
+		var session storedRequestSession
+		if err := json.Unmarshal(value, &session); err != nil {
+			return fmt.Errorf("decode request session: %w", err)
+		}
+		visit(session)
+	}
+	return rows.Err()
+}
+
 func (store *usageStore) ResetUsage() error {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
@@ -477,6 +561,9 @@ func (store *usageStore) ResetUsage() error {
 	transaction, err := store.db.Begin()
 	if err == nil {
 		_, err = transaction.Exec(`DELETE FROM requests`)
+	}
+	if err == nil {
+		_, err = transaction.Exec(`DELETE FROM request_sessions`)
 	}
 	if err == nil {
 		_, err = transaction.Exec(`DELETE FROM minute_aggregates`)

@@ -95,6 +95,12 @@ type modelRouteRPCRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type usageRPCRecord struct {
+	pluginapi.UsageRecord
+	TraceID         string
+	RequestEndpoint string
+}
+
 type abiRegistration struct {
 	SchemaVersion uint32             `json:"schema_version"`
 	Metadata      pluginapi.Metadata `json:"metadata"`
@@ -128,6 +134,7 @@ const maxCGoRequestLen = C.size_t(1<<31 - 1)
 
 const registrationSchemaVersion uint32 = 2
 const streamBodyOmissionSchemaVersion uint32 = 3
+const requestIdentitySchemaVersion uint32 = 7
 
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
@@ -268,12 +275,24 @@ func handleModelRouterABIMethod(ctx context.Context, method string, request []by
 			response, err = plugin.InterceptRequestAfterAuth(ctx, rpcRequest)
 		}
 		return okEnvelopeWithError(response, err)
+	case pluginabi.MethodRequestComplete:
+		if !plugin.requestIdentityEnabled {
+			return errorEnvelope("unknown_method", "unknown method: "+method, 0), nil
+		}
+		var completion pluginapi.RequestCompletion
+		if err := json.Unmarshal(request, &completion); err != nil {
+			return nil, fmt.Errorf("decode request.complete request: %w", err)
+		}
+		return okEnvelopeWithError(map[string]any{}, plugin.HandleRequestComplete(ctx, completion))
 	case pluginabi.MethodUsageHandle:
-		var record pluginapi.UsageRecord
+		var record usageRPCRecord
 		if err := json.Unmarshal(request, &record); err != nil {
 			return nil, fmt.Errorf("decode usage.handle request: %w", err)
 		}
-		plugin.HandleUsage(ctx, record)
+		if !plugin.requestIdentityEnabled {
+			record.TraceID, record.RequestEndpoint = "", ""
+		}
+		plugin.handleUsageWithIdentity(ctx, record.UsageRecord, record.TraceID, record.RequestEndpoint)
 		return okEnvelope(map[string]any{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method, 0), nil
@@ -297,6 +316,7 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	plugin.requestIdentityEnabled = request.SchemaVersion >= requestIdentitySchemaVersion
 	modelRouterABIState.Lock()
 	modelRouterABIState.plugin = plugin
 	modelRouterABIState.metadata = metadata
@@ -307,6 +327,9 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 	if request.SchemaVersion >= streamBodyOmissionSchemaVersion {
 		schemaVersion = streamBodyOmissionSchemaVersion
 	}
+	if plugin.requestIdentityEnabled {
+		schemaVersion = requestIdentitySchemaVersion
+	}
 	return okEnvelope(abiRegistration{
 		SchemaVersion: schemaVersion,
 		Metadata:      metadata,
@@ -315,7 +338,7 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 			ModelRouter:           true,
 			Executor:              true,
 			RequestInterceptor:    true,
-			RequestLifecycle:      false,
+			RequestLifecycle:      plugin.requestIdentityEnabled,
 			ResponseInterceptor:   false,
 			StreamInterceptor:     false,
 			UsagePlugin:           true,

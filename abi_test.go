@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -283,5 +284,102 @@ func TestABIReconfigureRetainsInstalledPluginAfterFailure(t *testing.T) {
 	modelRouterABIState.Unlock()
 	if recovered == installed {
 		t.Fatal("recovery reconfigure retained failed generation")
+	}
+}
+
+func TestABIRequestIdentityNegotiationAndDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		hostSchema   uint32
+		pluginSchema uint32
+		identity     bool
+	}{
+		{name: "legacy schema 6", hostSchema: 6, pluginSchema: 3},
+		{name: "identity schema 7", hostSchema: 7, pluginSchema: 7, identity: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetModelRouterABIState(t)
+			request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: tc.hostSchema})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope abiEnvelope
+			var registration abiRegistration
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(envelope.Result, &registration); err != nil {
+				t.Fatal(err)
+			}
+			if !envelope.OK || registration.SchemaVersion != tc.pluginSchema || registration.Capabilities.RequestLifecycle != tc.identity {
+				t.Fatalf("registration = %#v, envelope = %#v", registration, envelope)
+			}
+
+			intercept, err := json.Marshal(pluginapi.RequestInterceptRequest{
+				RequestID: "execution", TraceID: "1234", RequestedModel: "direct",
+				Metadata: map[string]any{"request_path": "/v1/chat/completions"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestInterceptBefore, intercept); err != nil {
+				t.Fatal(err)
+			}
+			completion, err := json.Marshal(pluginapi.RequestCompletion{
+				RequestID: "execution", TraceID: "1234", Outcome: pluginapi.RequestCompletionSucceeded, StatusCode: 200,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestComplete, completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK != tc.identity || (!tc.identity && (envelope.Error == nil || envelope.Error.Code != "unknown_method")) {
+				t.Fatalf("completion envelope = %#v", envelope)
+			}
+
+			usage := []byte(`{"Provider":"openai","Model":"provider-a","TraceID":"1234","RequestEndpoint":"POST /v1/chat/completions","Detail":{"TotalTokens":11}}`)
+			raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodUsageHandle, usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil || !envelope.OK {
+				t.Fatalf("usage envelope = %#v, %v", envelope, err)
+			}
+			modelRouterABIState.Lock()
+			plugin := modelRouterABIState.plugin
+			modelRouterABIState.Unlock()
+			records, err := plugin.store.referenceUsageRecords(usageFilter{})
+			if err != nil || len(records) != 1 {
+				t.Fatalf("usage records = %#v, %v", records, err)
+			}
+			wantID, wantEndpoint := "", ""
+			if tc.identity {
+				wantID, wantEndpoint = "1234", "POST /v1/chat/completions"
+			}
+			if records[0].RequestID != wantID || records[0].RequestEndpoint != wantEndpoint || records[0].ProviderModel != "provider-a" || records[0].TotalTokens != 11 {
+				t.Fatalf("usage record = %#v", records[0])
+			}
+			var sessions []storedRequestSession
+			if err := plugin.store.readSnapshot(func(connection *sql.Conn, _ int) error {
+				return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.identity && len(sessions) != 0 {
+				t.Fatalf("legacy sessions = %#v", sessions)
+			}
+			if tc.identity && (len(sessions) != 1 || sessions[0].RequestID != "1234" || sessions[0].StatusCode != 200 || sessions[0].Outcome != string(pluginapi.RequestCompletionSucceeded)) {
+				t.Fatalf("identity sessions = %#v", sessions)
+			}
+		})
 	}
 }

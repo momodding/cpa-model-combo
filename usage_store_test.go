@@ -259,6 +259,124 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 }
 
+func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	database, err := sql.Open("sqlite3", sqliteDSN(path, "WAL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Minute)
+	payload, err := json.Marshal(storedUsageRecord{Sequence: 7, RequestedAt: now, Attribution: attributionDirect, ProviderModel: "v1-model", TotalTokens: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE store_state (id INTEGER PRIMARY KEY CHECK (id = 1), storage_schema_version INTEGER NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 0, last_prune_day TEXT, prices_json BLOB, preferences_json BLOB)`,
+		`CREATE TABLE requests (sequence INTEGER PRIMARY KEY, requested_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX requests_requested_at_sequence ON requests(requested_at_ns, sequence)`,
+		`CREATE TABLE minute_aggregates (key BLOB PRIMARY KEY, minute_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+		`CREATE INDEX minute_aggregates_minute ON minute_aggregates(minute_ns)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO store_state(id, storage_schema_version, next_sequence, prices_json, preferences_json) VALUES (1, 1, 7, ?, ?)`, []byte(`{"prices":"kept"}`), []byte(`{"prefs":"kept"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO requests(sequence, requested_at_ns, payload) VALUES (7, ?, ?)`, now.UnixNano(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var version, sequence int
+	var prices, preferences []byte
+	if err := store.db.QueryRow(`SELECT storage_schema_version, next_sequence, prices_json, preferences_json FROM store_state WHERE id = 1`).Scan(&version, &sequence, &prices, &preferences); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
+		t.Fatalf("migrated state = %d/%d/%s/%s", version, sequence, prices, preferences)
+	}
+	var stored []byte
+	if err := store.db.QueryRow(`SELECT payload FROM requests WHERE sequence = 7`).Scan(&stored); err != nil || !bytes.Equal(stored, payload) {
+		t.Fatalf("migrated request = %s, %v", stored, err)
+	}
+	var indexes int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'request_sessions_started_at'`).Scan(&indexes); err != nil || indexes != 1 {
+		t.Fatalf("request_sessions index count = %d, %v", indexes, err)
+	}
+	if err := store.RecordSession(storedRequestSession{RequestID: "1234", StartedAt: now, CompletedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening a v2 database must not repeat the migration.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openUsageStore(path, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+}
+
+func TestUsageStoreRequestSessionUpsertRetentionAndReset(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC().Add(-time.Minute)
+	session := storedRequestSession{
+		RequestID: "1234", Endpoint: "POST /v1/chat/completions", RequestedModel: "auto", RouterModel: "auto", Attribution: attributionRouted,
+		Stream: true, Outcome: "failure", StatusCode: 502, StartedAt: now, CompletedAt: now.Add(time.Second), LatencyNS: uint64(time.Second),
+	}
+	if err := store.RecordSession(session); err != nil {
+		t.Fatal(err)
+	}
+	session.Outcome, session.StatusCode = "success", 200
+	if err := store.RecordSession(session); err != nil {
+		t.Fatal(err)
+	}
+	old := session
+	old.RequestID = "old"
+	old.StartedAt = now.AddDate(0, 0, -31)
+	if err := store.RecordSession(old); err != nil {
+		t.Fatal(err)
+	}
+	read := func() []storedRequestSession {
+		var sessions []storedRequestSession
+		if err := store.readSnapshot(func(connection *sql.Conn, _ int) error {
+			return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return sessions
+	}
+	// Write-time pruning runs once per day, so the expired session is still present until forced retention.
+	if sessions := read(); len(sessions) != 2 || sessions[1].RequestID != "1234" || sessions[1].Outcome != "success" || sessions[1].StatusCode != 200 || !sessions[1].StartedAt.Equal(now) {
+		t.Fatalf("sessions after upsert = %#v", sessions)
+	}
+	if err := pruneSQLiteDatabase(store.db, 30, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := read(); len(sessions) != 1 || sessions[0].RequestID != "1234" {
+		t.Fatalf("sessions after forced retention = %#v", sessions)
+	}
+	if err := store.ResetUsage(); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := read(); len(sessions) != 0 {
+		t.Fatalf("sessions after reset = %#v", sessions)
+	}
+}
+
 func TestDashboardPreferenceColumnDefaults(t *testing.T) {
 	want := []string{"provider", "result", "router_model", "service_tier", "source"}
 	defaults := defaultDashboardPreferences()
