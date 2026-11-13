@@ -16,7 +16,7 @@ Usage tracking covers both kinds of CPA traffic:
 
 Router and provider identities must remain separate throughout storage, filtering, aggregation, pricing, and display. A routed response can be rewritten to the alias for the client without changing the stored physical provider model.
 
-Request details instead presents inbound requests as parents keyed by CPA's `request_id`, with delivered provider records as attempt children. Overview and grouped accounting still count provider callbacks, not parents. A completed request can appear with no children; a direct request with one callback is expandable.
+Request details groups routed records by best-effort `router_request_id` attribution; direct and unattributed records are standalone. Stock CPA usage callbacks do not contain the trace identity required to reliably link provider records to inbound requests. Overview and grouped accounting count provider callbacks. Historical inbound sessions and request IDs remain readable.
 
 The feature intentionally does not include:
 
@@ -76,7 +76,7 @@ cpa-model-combo.db
 └── minute_aggregates
 ```
 
-`requests` stores provider usage records; `request_sessions` stores completed inbound request metadata. `minute_aggregates` stores UTC minute aggregates keyed by attribution, router model, provider model, provider, source, service tier, and result. Overview queries read provider records so filtering and price changes are reflected consistently.
+`requests` stores provider usage records; `request_sessions` retains historical completed inbound request metadata. `minute_aggregates` stores UTC minute aggregates keyed by attribution, router model, provider model, provider, source, service tier, and result. Overview queries read provider records so filtering and price changes are reflected consistently.
 
 Retention pruning runs when the database opens or is reconfigured and then at most once per UTC day during writes. SQLite may retain reusable pages after deletes and WAL checkpoints, so disk planning must account for peak retained request volume, including failed routed attempts.
 
@@ -99,7 +99,7 @@ The backup is the original bbolt file and must not be overwritten with an unveri
 
 ## CPA usage delivery and attribution
 
-CPA's `usage_plugin` callbacks are the sole source of provider accounting. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Router does not parse response bodies or stream chunks for usage and does not persist a fallback usage record. With CPA plugin schema 7, lifecycle completion additionally records inbound request metadata and final outcome, independently of provider accounting.
+CPA's `usage_plugin` callbacks are the sole source of provider accounting. CPA normalizes provider metadata, timing, failures, totals, cache reads, cache creation, and reasoning before delivering `usage.handle`; Model Router does not parse response bodies or stream chunks for usage and does not persist a fallback usage record. Stock CPA v7.3.9 advertises plugin RPC schema 6; the plugin negotiates schema 3. CPA can deliver lifecycle completion (introduced in schema 2), but the plugin does not register for lifecycle events, and stock usage callbacks lack trace identity for reliable correlation to an inbound request.
 
 ```text
 request starts
@@ -116,7 +116,7 @@ Correlation uses request time, provider model, and an in-memory keyed fingerprin
 
 CPA v7.3.9 or newer is required. That release preserves numeric HTTP statuses returned through native model callbacks, which lets Model Router apply its configured fallback rules. CPA v7.2.143 also detached asynchronous native usage delivery from request cancellation while preserving context values. CPA v7.2.142 and older can cancel `usage.handle` before Model Router receives it; the plugin does not recreate missing records from response bodies.
 
-Exact request-ID parents require a CPA host offering plugin schema 7, which adds `UsageRecord.TraceID` and `UsageRecord.RequestEndpoint`; the plugin registers its request lifecycle capability only when the host offers schema 7 or newer. A schema-6 host retains legacy behavior: routed records with a `router_request_id` group together, while direct and unattributed records are standalone. Historical records lacking `request_id` use the same fallback and are never joined to new parents by inference. Schema 7 is a capability requirement in addition to the CPA version requirements above; a version number alone does not establish that a host offers it.
+For new records, routed attempts with a best-effort `router_request_id` group together; direct and unattributed records are standalone. These groups do not establish an exact inbound request hierarchy. Historical request IDs and sessions remain readable and are not inferred for records that lack them.
 
 Routed stream retry behavior is unchanged: an attempt can fail over only before any upstream payload is emitted. CPA remains responsible for stream timing and usage totals.
 
@@ -134,7 +134,7 @@ Each request row can contain:
 - a short masked API-key display value;
 - an estimated USD cost resolved at query time.
 
-When supplied by a schema-7 host, provider records also carry the inbound `request_id` and `request_endpoint` (for example `POST /v1/chat/completions`). A completed lifecycle session stores its request ID, endpoint, requested and router models, attribution, stream flag, outcome, status, start/end times, and latency. The plugin stores the endpoint string CPA supplies and does not add query strings or bodies.
+Historical provider records may carry an inbound `request_id` and `request_endpoint` (for example `POST /v1/chat/completions`). A historical lifecycle session can contain its request ID, endpoint, requested and router models, attribution, stream flag, outcome, status, start/end times, and latency. Stock CPA usage callbacks do not supply the identity needed to join new provider records reliably to such sessions. The plugin does not add query strings or bodies to stored endpoints.
 
 The plugin does not persist:
 
@@ -185,9 +185,9 @@ The Usage tracking tab includes:
 - model pricing and models.dev sync;
 - an explicit typed confirmation for history reset.
 
-Request details shows **Request ID**, **API path**, and **Requested model**. Request ID is always visible and is removed from saved hidden-column preferences. Expansion state uses `id:<request_id>` or `legacy:<sequence>` for rows without an ID. For example, request `1234` to `POST /v1/chat/completions` can expand to `gpt5.6-sol` (429), then `claude-sonnet-5.5` (200): its lifecycle parent is successful with status 200, while both provider attempts remain visible and count in overview and breakdown.
+Request details shows **Request ID**, **API path**, and **Requested model**, when available. Request ID is always visible and is removed from saved hidden-column preferences. Expansion state uses `id:<request_id>` or `legacy:<sequence>` for rows without an ID. New stock CPA usage records cannot be reliably joined to an inbound request ID; historical sessions can still be displayed.
 
-Children sharing one non-empty `router_request_id` sort by `router_attempt`, `requested_at`, then `sequence`; otherwise they sort by `requested_at`, then `sequence`. Lifecycle fields supply the parent result and end-to-end latency. If provider usage arrives before completion, a temporary parent is derived from children with the exact request ID until lifecycle metadata arrives.
+Children sharing one non-empty `router_request_id` sort by `router_attempt`, `requested_at`, then `sequence`; otherwise they sort by `requested_at`, then `sequence`. Historical lifecycle fields can supply the parent result and end-to-end latency.
 
 The token chart keeps cache-read and separately reported reasoning segments mutually exclusive with their parent counters according to each record's accounting mode, including when one time bucket mixes providers with different accounting conventions.
 
@@ -228,7 +228,7 @@ All endpoints require CPA Management API authentication.
 
 Overview, group, and request queries accept RFC3339 `from` and `to` plus optional `attribution`, `router_model`, `provider_model`, `source`, `service_tier`, and `result` filters. `router_model` always matches a literal route alias. Use `attribution=direct`, `attribution=unattributed`, or `attribution=routed` to filter by request origin; this keeps aliases named `direct` or `unattributed` distinct from the synthetic traffic classes. Group and request endpoints also accept `sort`, `order`, `offset`, and `limit`; the maximum page size is 500.
 
-The dashboard endpoint accepts the same filters and `granularity`, plus `group_dimension`, `group_sort`, `group_order`, `group_offset`, `group_limit`, `request_sort`, `request_order`, `request_offset`, and `request_limit`. Defaults and limits match the individual endpoints. It returns `overview`, `groups`, and `requests`, with a shared `generated_at`, `schema_version`, and `price_book_revision` on the outer response. Usage overview, group, request, and dashboard responses use management `schema_version: 2`, distinct from CPA plugin schema 7 and SQLite storage schema 2.
+The dashboard endpoint accepts the same filters and `granularity`, plus `group_dimension`, `group_sort`, `group_order`, `group_offset`, `group_limit`, `request_sort`, `request_order`, `request_offset`, and `request_limit`. Defaults and limits match the individual endpoints. It returns `overview`, `groups`, and `requests`, with a shared `generated_at`, `schema_version`, and `price_book_revision` on the outer response. Usage overview, group, request, and dashboard responses use management `schema_version: 2`, distinct from CPA plugin RPC schema and SQLite storage schema 2.
 
 Request-page `items` are parents, and `total` counts matching parents rather than provider callbacks. Parent details include `request_id`, `request_endpoint`, `requested_model`, `stream`, `result`, `status_code`, and `latency_ns` when available; `attempts` contains provider details and `attempt_count` reports their number when nonzero. Identity and attempt fields may be omitted when unavailable. Parent token and estimated cost values aggregate children. Parent time, attribution, router-model, and result filters apply to the parent; provider-model, source, and service-tier filters match any one child. Zero-child parents do not match those child-specific filters.
 
@@ -239,7 +239,6 @@ config.go                    storage configuration and validation
 plugin_path*.go              default database path discovery
 main.go                      plugin capabilities and usage callbacks
 abi.go                       schema negotiation and usage dispatch
-request_sessions.go          inbound lifecycle staging and completion
 attribution.go               correlation markers and ambiguity handling
 usage_types.go               persisted and API data contracts
 usage_store.go               SQLite WAL lifecycle, records, reset, prices, preferences
@@ -283,7 +282,7 @@ Then install the built library in a disposable CPA instance and verify:
 
 1. Configuration is the default tab and keyboard tab navigation works.
 2. Routed and direct streaming and non-streaming requests remain distinct, and every delivered CPA usage record appears once.
-3. Request `1234` with a 429 followed by a 200 appears as one successful parent with two ordered provider attempts; overview and groups count both callbacks.
+3. Routed attempts are grouped only when their best-effort attribution supplies the same router request ID; do not assume stock CPA provides an exact inbound request hierarchy. Overview and groups count delivered provider callbacks.
 4. Refresh keeps old values and scroll positions visible while requests are pending.
 5. Every chart tooltip and highlight works with pointer and keyboard input, including after zoom, resize, refresh, and theme changes.
 6. Metrics show their complete values without ellipses at desktop, tablet, and mobile widths.

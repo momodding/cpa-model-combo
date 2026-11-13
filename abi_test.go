@@ -3,12 +3,14 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func TestPluginMetadataPublicIdentity(t *testing.T) {
@@ -287,19 +289,11 @@ func TestABIReconfigureRetainsInstalledPluginAfterFailure(t *testing.T) {
 	}
 }
 
-func TestABIRequestIdentityNegotiationAndDispatch(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		hostSchema   uint32
-		pluginSchema uint32
-		identity     bool
-	}{
-		{name: "legacy schema 6", hostSchema: 6, pluginSchema: 3},
-		{name: "identity schema 7", hostSchema: 7, pluginSchema: 7, identity: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestABIStockSchemaNegotiationAndDispatch(t *testing.T) {
+	for _, hostSchema := range []uint32{2, 6, 7} {
+		t.Run(fmt.Sprint(hostSchema), func(t *testing.T) {
 			resetModelRouterABIState(t)
-			request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: tc.hostSchema})
+			request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: hostSchema})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,39 +309,14 @@ func TestABIRequestIdentityNegotiationAndDispatch(t *testing.T) {
 			if err := json.Unmarshal(envelope.Result, &registration); err != nil {
 				t.Fatal(err)
 			}
-			if !envelope.OK || registration.SchemaVersion != tc.pluginSchema || registration.Capabilities.RequestLifecycle != tc.identity {
+			wantSchema := registrationSchemaVersion
+			if hostSchema >= streamBodyOmissionSchemaVersion {
+				wantSchema = streamBodyOmissionSchemaVersion
+			}
+			if !envelope.OK || registration.SchemaVersion != wantSchema || registration.Capabilities.RequestLifecycle {
 				t.Fatalf("registration = %#v, envelope = %#v", registration, envelope)
 			}
-
-			intercept, err := json.Marshal(pluginapi.RequestInterceptRequest{
-				RequestID: "execution", TraceID: "1234", RequestedModel: "direct",
-				Metadata: map[string]any{"request_path": "/v1/chat/completions"},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestInterceptBefore, intercept); err != nil {
-				t.Fatal(err)
-			}
-			completion, err := json.Marshal(pluginapi.RequestCompletion{
-				RequestID: "execution", TraceID: "1234", Outcome: pluginapi.RequestCompletionSucceeded, StatusCode: 200,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestComplete, completion)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(raw, &envelope); err != nil {
-				t.Fatal(err)
-			}
-			if envelope.OK != tc.identity || (!tc.identity && (envelope.Error == nil || envelope.Error.Code != "unknown_method")) {
-				t.Fatalf("completion envelope = %#v", envelope)
-			}
-
-			usage := []byte(`{"Provider":"openai","Model":"provider-a","TraceID":"1234","RequestEndpoint":"POST /v1/chat/completions","Detail":{"TotalTokens":11}}`)
-			raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodUsageHandle, usage)
+			raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodUsageHandle, []byte(`{"Provider":"openai","Model":"provider-a","TraceID":"1234","RequestEndpoint":"POST /v1/chat/completions","Detail":{"TotalTokens":11}}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -361,24 +330,8 @@ func TestABIRequestIdentityNegotiationAndDispatch(t *testing.T) {
 			if err != nil || len(records) != 1 {
 				t.Fatalf("usage records = %#v, %v", records, err)
 			}
-			wantID, wantEndpoint := "", ""
-			if tc.identity {
-				wantID, wantEndpoint = "1234", "POST /v1/chat/completions"
-			}
-			if records[0].RequestID != wantID || records[0].RequestEndpoint != wantEndpoint || records[0].ProviderModel != "provider-a" || records[0].TotalTokens != 11 {
+			if records[0].RequestID != "" || records[0].RequestEndpoint != "" || records[0].ProviderModel != "provider-a" || records[0].TotalTokens != 11 {
 				t.Fatalf("usage record = %#v", records[0])
-			}
-			var sessions []storedRequestSession
-			if err := plugin.store.readSnapshot(func(connection *sql.Conn, _ int) error {
-				return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if !tc.identity && len(sessions) != 0 {
-				t.Fatalf("legacy sessions = %#v", sessions)
-			}
-			if tc.identity && (len(sessions) != 1 || sessions[0].RequestID != "1234" || sessions[0].StatusCode != 200 || sessions[0].Outcome != string(pluginapi.RequestCompletionSucceeded)) {
-				t.Fatalf("identity sessions = %#v", sessions)
 			}
 		})
 	}
@@ -432,7 +385,7 @@ func TestABILegacySchemaGroupsRouterAttemptsWithoutSessions(t *testing.T) {
 		tokens int
 	}{{"provider-b", 1, 7}, {"provider-a", 0, 5}} {
 		plugin.attribution.MarkRouted("smart", attempt.model, nil, "router-request", attempt.number)
-		usage, err := json.Marshal(map[string]any{"Provider": "openai", "Model": attempt.model, "TraceID": "trace", "RequestEndpoint": "POST /v1/chat/completions", "Detail": map[string]int{"TotalTokens": attempt.tokens}})
+		usage, err := json.Marshal(map[string]any{"Provider": "openai", "Model": attempt.model, "Detail": map[string]int{"TotalTokens": attempt.tokens}})
 		if err != nil {
 			t.Fatal(err)
 		}

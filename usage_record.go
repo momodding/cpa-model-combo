@@ -11,9 +11,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// handleUsageWithIdentity records a provider usage callback with CPA's inbound request identity.
-// Identity is stored independently of attribution; empty values (pre-schema-7 hosts) are omitted.
-func (p *modelRouterPlugin) handleUsageWithIdentity(_ context.Context, record pluginapi.UsageRecord, requestID, requestEndpoint string) {
+// HandleUsage records provider usage callbacks independently of routing execution.
+func (p *modelRouterPlugin) HandleUsage(_ context.Context, record pluginapi.UsageRecord) {
 	if p == nil || !p.config.Enabled || p.store == nil {
 		return
 	}
@@ -22,7 +21,6 @@ func (p *modelRouterPlugin) handleUsageWithIdentity(_ context.Context, record pl
 		attribution = p.attribution.Match(record)
 	}
 	stored := storedRecordFromUsage(record, attribution)
-	stored.RequestID, stored.RequestEndpoint = requestID, requestEndpoint
 	_ = p.store.Record(stored)
 }
 

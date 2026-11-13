@@ -35,15 +35,6 @@ jobs:
       - run: go vet ./...
       - name: Test minimum supported CPA integration
         run: CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1
-      - name: Check out CPA request identity feature
-        uses: actions/checkout@v7
-        with:
-          repository: momodding/CLIProxyAPI-usage-request-identity
-          ref: 3debe12336b4d4d16c28f0bd3e6c206cca57d15c
-          path: .cpa-identity-source
-          persist-credentials: false
-      - name: Test CPA request identity integration
-        run: CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-identity-source" go test -tags=integration ./... -count=1
       - name: Build native plugin
         run: |
           mkdir -p dist

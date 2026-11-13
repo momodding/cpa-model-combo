@@ -19,11 +19,8 @@ type modelRouterPlugin struct {
 	runtime          *routeRuntime
 	store            *usageStore
 	attribution      *attributionTracker
-	requestSessions  *requestSessionTracker
 	modelsDevFetcher modelsDevCatalogFetcher
 	priceSync        *priceSyncState
-	// requestIdentityEnabled is set before publication when the host negotiated schema 7.
-	requestIdentityEnabled bool
 }
 
 var (
@@ -31,7 +28,6 @@ var (
 	_ pluginapi.ModelRegistrar         = (*modelRouterPlugin)(nil)
 	_ pluginapi.ProviderExecutor       = (*modelRouterPlugin)(nil)
 	_ pluginapi.RequestInterceptor     = (*modelRouterPlugin)(nil)
-	_ pluginapi.RequestLifecyclePlugin = (*modelRouterPlugin)(nil)
 	_ pluginapi.UsagePlugin            = (*modelRouterPlugin)(nil)
 )
 
@@ -43,16 +39,12 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 	runtime := newRouteRuntime(nil)
 	var store *usageStore
 	attribution := newAttributionTracker(nil)
-	requestSessions := newRequestSessionTracker(nil)
 	var fetcher modelsDevCatalogFetcher
 	priceSync := &priceSyncState{}
 	if previous != nil {
 		runtime = previous.runtime.Clone(cfg.Routes)
 		store = previous.store
 		attribution = previous.attribution
-		if previous.requestSessions != nil {
-			requestSessions = previous.requestSessions
-		}
 		fetcher = previous.modelsDevFetcher
 		priceSync = previous.priceSync
 		if priceSync == nil {
@@ -71,7 +63,7 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 			return nil, pluginapi.Metadata{}, err
 		}
 	}
-	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, requestSessions: requestSessions, modelsDevFetcher: fetcher, priceSync: priceSync}
+	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
 		Version:          pluginVersion,
@@ -105,16 +97,11 @@ func (p *modelRouterPlugin) HttpRequest(_ context.Context, _ pluginapi.ExecutorH
 	return pluginapi.ExecutorHTTPResponse{}, fmt.Errorf("%s does not implement executor.http_request", pluginID)
 }
 
-func (p *modelRouterPlugin) HandleUsage(ctx context.Context, record pluginapi.UsageRecord) {
-	p.handleUsageWithIdentity(ctx, record, "", "")
-}
-
 func (p *modelRouterPlugin) InterceptRequestBeforeAuth(_ context.Context, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 	if p == nil || !p.config.Enabled {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
-	route, routed := p.matchingRoute(request.RequestedModel)
-	p.stageRequestSession(request, route.Alias)
+	_, routed := p.matchingRoute(request.RequestedModel)
 	if routed || p.attribution == nil {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}

@@ -255,7 +255,7 @@ openai-compatibility:
 		cacheCreationTokens += item.CacheCreationTokens
 		switch item.Attribution {
 		case attributionRouted:
-			// schema-7: ProviderModel is on attempt children, not the parent record
+			// Grouped routed attempts carry their provider models on the children.
 			pm := item.ProviderModel
 			if pm == "" {
 				for _, a := range item.Attempts {
