@@ -255,8 +255,18 @@ openai-compatibility:
 		cacheCreationTokens += item.CacheCreationTokens
 		switch item.Attribution {
 		case attributionRouted:
-			if item.RouterModel == "smoke-router-alias" && item.ProviderModel != "" {
-				routedModel = item.ProviderModel
+			// schema-7: ProviderModel is on attempt children, not the parent record
+			pm := item.ProviderModel
+			if pm == "" {
+				for _, a := range item.Attempts {
+					if a.ProviderModel != "" {
+						pm = a.ProviderModel
+						break
+					}
+				}
+			}
+			if item.RouterModel == "smoke-router-alias" && pm != "" {
+				routedModel = pm
 			}
 			if item.Failed {
 				routedFailures++
@@ -269,7 +279,16 @@ openai-compatibility:
 				}
 			}
 		case attributionDirect:
-			if item.RouterModel == "" && item.ProviderModel != "" {
+			pm := item.ProviderModel
+			if pm == "" {
+				for _, a := range item.Attempts {
+					if a.ProviderModel != "" {
+						pm = a.ProviderModel
+						break
+					}
+				}
+			}
+			if item.RouterModel == "" && pm != "" {
 				foundDirect = true
 			}
 			if !item.Failed {
