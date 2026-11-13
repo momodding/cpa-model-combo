@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type usageRouterKey struct{ model, attribution string }
@@ -58,7 +60,7 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 			return err
 		}
 		now := time.Now().UTC()
-		result = usageDashboard{SchemaVersion: usageSchemaVersion, GeneratedAt: now, PriceBookRevision: book.Revision}
+		result = usageDashboard{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: now, PriceBookRevision: book.Revision}
 		resolver := newModelPriceResolver(book.Prices, book.SyncSettings)
 		var overview *usageOverviewAccumulator
 		if granularity != "" {
@@ -97,6 +99,9 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 			if err != nil {
 				return err
 			}
+			if err := scanRequestSessions(connection, selection.addSession); err != nil {
+				return err
+			}
 		}
 		if overview != nil {
 			result.Overview = overview.finish()
@@ -131,7 +136,7 @@ type usageOverviewAccumulator struct {
 
 func newUsageOverviewAccumulator(filter usageFilter, granularity string, now time.Time, retentionDays int, storageError string) *usageOverviewAccumulator {
 	return &usageOverviewAccumulator{
-		overview:    usageOverview{SchemaVersion: usageSchemaVersion, GeneratedAt: now, From: filter.From, To: filter.To, RetainedSince: now.AddDate(0, 0, -retentionDays), StorageError: storageError},
+		overview:    usageOverview{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: now, From: filter.From, To: filter.To, RetainedSince: now.AddDate(0, 0, -retentionDays), StorageError: storageError},
 		granularity: granularity, series: make(map[string]*usageSeriesPoint), routerModels: make(map[usageRouterKey]*usageModelStats), providerModels: make(map[string]*usageModelStats),
 		sources: make(map[string]struct{}), serviceTiers: make(map[string]struct{}), results: make(map[string]struct{}),
 	}
@@ -335,7 +340,7 @@ func (acc *usageGroupsAccumulator) finish(options usageGroupOptions, now time.Ti
 	})
 	total := len(items)
 	items = paginateGroups(items, offset, limit)
-	return usageGroupPage{SchemaVersion: usageSchemaVersion, GeneratedAt: now, Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}
+	return usageGroupPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: now, Dimension: dimension, Total: total, Offset: offset, Limit: limit, Items: items}
 }
 
 func usageDimensionValue(record storedUsageRecord, dimension string) string {
@@ -410,12 +415,14 @@ func paginateGroups(items []usageGroup, offset, limit int) []usageGroup {
 
 type usageRequestCandidate struct {
 	storedUsageRecord
-	cost         estimatedCost
-	sortValue    float64
-	tps          float64
-	generationNS uint64
-	attempts     []usageRequestCandidate
-	aggregate    bool
+	cost           estimatedCost
+	sortValue      float64
+	tps            float64
+	generationNS   uint64
+	attempts       []usageRequestCandidate
+	requestedModel string
+	stream         bool
+	aggregate      bool
 }
 
 type usageRequestSelection struct {
@@ -424,6 +431,8 @@ type usageRequestSelection struct {
 	items           []usageRequestCandidate
 	standalone      []usageRequestCandidate
 	grouped         map[string][]usageRequestCandidate
+	byRequest       map[string][]usageRequestCandidate
+	sessions        map[string]storedRequestSession
 	total, capacity int
 	withCosts       bool
 }
@@ -433,13 +442,16 @@ func newUsageRequestSelection(options usagePageOptions, filter usageFilter, with
 	if options.Offset <= capacity-options.Limit {
 		capacity = options.Offset + options.Limit
 	}
-	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, grouped: make(map[string][]usageRequestCandidate), withCosts: withCosts}
+	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, grouped: make(map[string][]usageRequestCandidate), byRequest: make(map[string][]usageRequestCandidate), sessions: make(map[string]storedRequestSession), withCosts: withCosts}
 }
 
 func (selection *usageRequestSelection) better(left, right usageRequestCandidate) bool {
 	comparison := compareRequests(left, right, selection.options.Sort)
 	if comparison == 0 {
 		comparison = compareUint64(left.Sequence, right.Sequence)
+	}
+	if comparison == 0 {
+		comparison = strings.Compare(left.RequestID, right.RequestID)
 	}
 	if selection.options.Order == "asc" {
 		return comparison < 0
@@ -477,11 +489,21 @@ func (selection *usageRequestSelection) add(record storedUsageRecord, cost estim
 	if selection.options.Sort == "cost" {
 		candidate.sortValue = cost.TotalUSD
 	}
+	if record.RequestID != "" {
+		selection.byRequest[record.RequestID] = append(selection.byRequest[record.RequestID], candidate)
+		return
+	}
 	if record.Attribution == attributionRouted && record.RouterRequestID != "" {
 		selection.grouped[record.RouterRequestID] = append(selection.grouped[record.RouterRequestID], candidate)
 		return
 	}
 	selection.standalone = append(selection.standalone, candidate)
+}
+
+func (selection *usageRequestSelection) addSession(session storedRequestSession) {
+	if session.RequestID != "" {
+		selection.sessions[session.RequestID] = session
+	}
 }
 
 func (selection *usageRequestSelection) selectCandidate(candidate usageRequestCandidate) {
@@ -504,6 +526,15 @@ func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revi
 	selection.total = 0
 	for _, candidate := range selection.standalone {
 		selection.addLogical(candidate)
+	}
+	for id, session := range selection.sessions {
+		session := session
+		selection.addLogical(requestParent(id, &session, selection.byRequest[id]))
+		delete(selection.byRequest, id)
+	}
+	// Provider usage can arrive before the asynchronous lifecycle completion; synthesize a temporary parent from the exact request ID.
+	for id, children := range selection.byRequest {
+		selection.addLogical(requestParent(id, nil, children))
 	}
 	for _, attempts := range selection.grouped {
 		sort.SliceStable(attempts, func(i, j int) bool {
@@ -528,6 +559,7 @@ func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revi
 			} else {
 				detail = requestDetail(candidate.storedUsageRecord, resolver)
 			}
+			detail.RequestedModel, detail.Stream = candidate.requestedModel, candidate.stream
 			if candidate.aggregate {
 				detail.GenerationNS = candidate.generationNS
 				detail.TPS = candidate.tps
@@ -548,7 +580,66 @@ func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revi
 			items = append(items, detail)
 		}
 	}
-	return usageRequestPage{SchemaVersion: usageSchemaVersion, GeneratedAt: now, PriceBookRevision: revision, Total: selection.total, Offset: options.Offset, Limit: options.Limit, Items: items}
+	return usageRequestPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: now, PriceBookRevision: revision, Total: selection.total, Offset: options.Offset, Limit: options.Limit, Items: items}
+}
+
+// orderRequestChildren picks one ordering mode per parent; a mixed pairwise comparator would not be a strict weak order.
+func orderRequestChildren(children []usageRequestCandidate) bool {
+	byAttempt := children[0].RouterRequestID != ""
+	for _, child := range children {
+		if child.RouterRequestID != children[0].RouterRequestID {
+			byAttempt = false
+			break
+		}
+	}
+	sort.SliceStable(children, func(i, j int) bool {
+		left, right := children[i], children[j]
+		if byAttempt && left.RouterAttempt != right.RouterAttempt {
+			return left.RouterAttempt < right.RouterAttempt
+		}
+		if !left.RequestedAt.Equal(right.RequestedAt) {
+			return left.RequestedAt.Before(right.RequestedAt)
+		}
+		return left.Sequence < right.Sequence
+	})
+	return byAttempt
+}
+
+// requestParent builds one inbound-request row. Lifecycle session fields win over child-derived ones; without a
+// session (usage arrived first) the parent is derived from its children alone.
+func requestParent(id string, session *storedRequestSession, children []usageRequestCandidate) usageRequestCandidate {
+	parent := usageRequestCandidate{aggregate: true}
+	if len(children) > 0 {
+		sameRouterRequest := orderRequestChildren(children)
+		parent = aggregateRequestAttempts(children)
+		parent.attempts = children
+		if !sameRouterRequest {
+			parent.RouterRequestID = ""
+		}
+		parent.Attribution = children[0].Attribution
+		parent.RouterAttempt = 0
+		parent.Provider, parent.ExecutorType, parent.ReasoningMode, parent.ProviderModel, parent.ProviderAlias, parent.ReasoningEffort, parent.ServiceTier, parent.MaskedAPIKey = "", "", "", "", "", "", "", ""
+		parent.Generate = false
+		parent.RequestEndpoint = ""
+		for _, child := range children {
+			if child.RequestEndpoint != "" {
+				parent.RequestEndpoint = child.RequestEndpoint
+				break
+			}
+		}
+	}
+	parent.RequestID = id
+	if session != nil {
+		parent.Attribution, parent.RouterModel = session.Attribution, session.RouterModel
+		parent.Failed = session.Outcome != string(pluginapi.RequestCompletionSucceeded)
+		parent.StatusCode, parent.LatencyNS = session.StatusCode, session.LatencyNS
+		parent.RequestEndpoint = firstNonEmpty(parent.RequestEndpoint, session.Endpoint)
+		parent.requestedModel, parent.stream = session.RequestedModel, session.Stream
+		if !session.StartedAt.IsZero() {
+			parent.RequestedAt = session.StartedAt
+		}
+	}
+	return parent
 }
 
 func (selection *usageRequestSelection) addLogical(candidate usageRequestCandidate) {
@@ -568,7 +659,7 @@ func (selection *usageRequestSelection) matchesLogical(candidate usageRequestCan
 		return true
 	}
 	attempts := candidate.attempts
-	if len(attempts) == 0 {
+	if len(attempts) == 0 && candidate.RequestID == "" {
 		attempts = []usageRequestCandidate{candidate}
 	}
 	for _, attempt := range attempts {
@@ -604,6 +695,7 @@ func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCand
 	parent.TTFTNS = 0
 	parent.generationNS = 0
 	parent.cost = estimatedCost{Priced: true}
+	parent.sortValue = 0
 	parent.RequestedAt, parent.Sequence = attempts[0].RequestedAt, attempts[0].Sequence
 	for _, attempt := range attempts {
 		if attempt.RequestedAt.Before(parent.RequestedAt) {
@@ -641,6 +733,7 @@ func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCand
 	if parent.generationNS > 0 {
 		parent.tps = float64(parent.OutputTokens) / (float64(parent.generationNS) / float64(time.Second))
 	}
+	parent.sortValue = parent.cost.TotalUSD
 	return parent
 }
 

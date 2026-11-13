@@ -383,3 +383,82 @@ func TestABIRequestIdentityNegotiationAndDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestABILegacySchemaGroupsRouterAttemptsWithoutSessions(t *testing.T) {
+	resetModelRouterABIState(t)
+	request, err := json.Marshal(lifecycleRequest{ConfigYAML: []byte("routes: []\n"), SchemaVersion: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodPluginRegister, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope abiEnvelope
+	var registration abiRegistration
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(envelope.Result, &registration); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK || registration.SchemaVersion != 3 || registration.Capabilities.RequestLifecycle {
+		t.Fatalf("registration = %#v, envelope = %#v", registration, envelope)
+	}
+	modelRouterABIState.Lock()
+	plugin := modelRouterABIState.plugin
+	modelRouterABIState.Unlock()
+	intercept, err := json.Marshal(pluginapi.RequestInterceptRequest{RequestID: "execution", TraceID: "trace", RequestedModel: "direct", Metadata: map[string]any{"request_path": "/v1/chat/completions"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestInterceptBefore, intercept); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := json.Marshal(pluginapi.RequestCompletion{RequestID: "execution", TraceID: "trace", Outcome: pluginapi.RequestCompletionSucceeded, StatusCode: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = handleModelRouterABIMethod(t.Context(), pluginabi.MethodRequestComplete, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.OK || envelope.Error == nil || envelope.Error.Code != "unknown_method" {
+		t.Fatalf("completion envelope = %#v, %v", envelope, err)
+	}
+	for _, attempt := range []struct {
+		model  string
+		number int
+		tokens int
+	}{{"provider-b", 1, 7}, {"provider-a", 0, 5}} {
+		plugin.attribution.MarkRouted("smart", attempt.model, nil, "router-request", attempt.number)
+		usage, err := json.Marshal(map[string]any{"Provider": "openai", "Model": attempt.model, "TraceID": "trace", "RequestEndpoint": "POST /v1/chat/completions", "Detail": map[string]int{"TotalTokens": attempt.tokens}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := handleModelRouterABIMethod(t.Context(), pluginabi.MethodUsageHandle, usage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil || !envelope.OK {
+			t.Fatalf("usage envelope = %#v, %v", envelope, err)
+		}
+	}
+	page, err := plugin.store.Requests(usageFilter{}, "time", "asc", 0, 10)
+	if err != nil || page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("legacy page = %#v, %v", page, err)
+	}
+	parent := page.Items[0]
+	if parent.RequestID != "" || parent.RequestEndpoint != "" || parent.RouterRequestID != "router-request" || parent.Attribution != attributionRouted || parent.TotalTokens != 12 || parent.AttemptCount != 2 || len(parent.Attempts) != 2 || parent.Attempts[0].ProviderModel != "provider-a" || parent.Attempts[1].ProviderModel != "provider-b" {
+		t.Fatalf("legacy parent = %#v", parent)
+	}
+	var sessions []storedRequestSession
+	if err := plugin.store.readSnapshot(func(connection *sql.Conn, _ int) error {
+		return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("legacy sessions = %#v", sessions)
+	}
+}

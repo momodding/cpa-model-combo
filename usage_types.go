@@ -3,6 +3,7 @@ package main
 import "time"
 
 const usageSchemaVersion = 1
+const usageManagementSchemaVersion = 2
 
 type usageCounters struct {
 	Requests                 uint64 `json:"requests"`
@@ -77,6 +78,8 @@ func (record storedUsageRecord) result() string {
 
 type usageRequestDetail struct {
 	storedUsageRecord
+	RequestedModel           string               `json:"requested_model,omitempty"`
+	Stream                   bool                 `json:"stream"`
 	Result                   string               `json:"result"`
 	GenerationNS             uint64               `json:"generation_ns"`
 	TPS                      float64              `json:"tps"`
