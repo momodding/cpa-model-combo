@@ -24,11 +24,11 @@ type modelRouterPlugin struct {
 }
 
 var (
-	_ pluginapi.ModelRouter            = (*modelRouterPlugin)(nil)
-	_ pluginapi.ModelRegistrar         = (*modelRouterPlugin)(nil)
-	_ pluginapi.ProviderExecutor       = (*modelRouterPlugin)(nil)
-	_ pluginapi.RequestInterceptor     = (*modelRouterPlugin)(nil)
-	_ pluginapi.UsagePlugin            = (*modelRouterPlugin)(nil)
+	_ pluginapi.ModelRouter        = (*modelRouterPlugin)(nil)
+	_ pluginapi.ModelRegistrar     = (*modelRouterPlugin)(nil)
+	_ pluginapi.ProviderExecutor   = (*modelRouterPlugin)(nil)
+	_ pluginapi.RequestInterceptor = (*modelRouterPlugin)(nil)
+	_ pluginapi.UsagePlugin        = (*modelRouterPlugin)(nil)
 )
 
 func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*modelRouterPlugin, pluginapi.Metadata, error) {
