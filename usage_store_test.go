@@ -403,6 +403,44 @@ func TestDashboardPreferenceColumnDefaults(t *testing.T) {
 	}
 }
 
+func TestDashboardPreferencesNeverHideRequiredRequestID(t *testing.T) {
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	input := defaultDashboardPreferences()
+	input.HiddenRequestColumns = []string{"time", "request_id", " request_id "}
+	saved, err := store.SavePreferences(input)
+	if err != nil || !slices.Equal(saved.HiddenRequestColumns, []string{"time"}) {
+		t.Fatalf("saved hidden request columns = %#v, %v; want [time]", saved.HiddenRequestColumns, err)
+	}
+	// Hiding every other column is valid because Request ID always stays visible.
+	input.HiddenRequestColumns = slices.Clone(requestColumnFields)
+	if saved, err = store.SavePreferences(input); err != nil || slices.Contains(saved.HiddenRequestColumns, "request_id") || len(saved.HiddenRequestColumns) != len(requestColumnFields)-1 {
+		t.Fatalf("saved all-hidden request columns = %#v, %v", saved.HiddenRequestColumns, err)
+	}
+	var persisted []byte
+	if err := store.db.QueryRow(`SELECT preferences_json FROM store_state WHERE id = 1`).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	var decoded dashboardPreferences
+	if err := json.Unmarshal(persisted, &decoded); err != nil || slices.Contains(decoded.HiddenRequestColumns, "request_id") || len(decoded.HiddenRequestColumns) != len(requestColumnFields)-1 {
+		t.Fatalf("persisted preferences = %#v, %v", decoded, err)
+	}
+
+	// Preferences persisted before Request ID became required must be normalized on load.
+	legacy := `{"request_page_size":25,"hidden_request_columns":["request_id","cost"]}`
+	if _, err := store.db.Exec(`UPDATE store_state SET preferences_json = ? WHERE id = 1`, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.QueryPreferences()
+	if err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, []string{"cost"}) {
+		t.Fatalf("loaded legacy preferences = %#v, %v; want hidden [cost]", loaded, err)
+	}
+}
+
 func TestSafeStoredUsageSourceRejectsCredentialShapedValues(t *testing.T) {
 	for _, source := range []string{"abcdefgh12345678", "abcdefghijklmno", "123456789012345", "AbCd+1234==", "Ab/Cd+1234==", "client:secret-token", "client@secret-token", "client$secret"} {
 		record := pluginapi.UsageRecord{Provider: "openai", ExecutorType: "openai", Source: source}

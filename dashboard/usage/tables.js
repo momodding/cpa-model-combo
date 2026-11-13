@@ -1,4 +1,4 @@
-function visibleColumns(definitions,hidden){return definitions.filter(column=>!hidden.has(column.key))}
+function visibleColumns(definitions,hidden){return definitions.filter(column=>column.key==='request_id'||!hidden.has(column.key))}
 function renderColumnControls(definitions,hidden,containerID,kind){
   const container=document.getElementById(containerID);
   const fragment=document.createDocumentFragment();
@@ -8,8 +8,8 @@ function renderColumnControls(definitions,hidden,containerID,kind){
     const input=document.createElement('input');
     const text=document.createElement('span');
     input.type='checkbox';
-    input.checked=!hidden.has(column.key);
-    input.disabled=input.checked&&visibleCount<=1;
+    input.checked=column.key==='request_id'||!hidden.has(column.key);
+    input.disabled=column.key==='request_id'||(input.checked&&visibleCount<=1);
     input.dataset.columnKind=kind;
     input.dataset.columnKey=column.key;
     text.textContent=column.label;
@@ -76,7 +76,7 @@ function requestCell(row,item,column){
   switch(column.key){
   case 'time':return tableCell(row,formatRequestTime(item.requested_at),true);
   case 'router_model':return tableCell(row,routerDisplay(item),true);
-  case 'provider_model':case 'provider':case 'source':case 'service_tier':return tableCell(row,item[column.key],true);
+  case 'request_endpoint':case 'requested_model':case 'provider_model':case 'provider':case 'source':case 'service_tier':return tableCell(row,item[column.key],true);
   case 'result':return statusCell(row,item.result);
   case 'latency':return tableCell(row,formatDuration(item.latency_ns));
   case 'ttft':return tableCell(row,formatDuration(item.ttft_ns));
@@ -105,37 +105,39 @@ function renderGroupTable(){
   document.getElementById('group-prev').disabled=usageState.group.offset<=0;
   document.getElementById('group-next').disabled=usageState.group.offset+usageState.group.limit>=total;
 }
-function requestAttemptIDs(item){return item.attempts.map((_,index)=>'request-attempt-'+item.sequence+'-'+index)}
-function requestRouterCell(row,item,attemptNumber,controls){
+function requestKey(item){return item.request_id?'id:'+item.request_id:'legacy:'+item.sequence}
+function requestIDCell(row,item,attemptNumber,controls){
   const cell=document.createElement('td');cell.className='text-cell';
-  if(attemptNumber){cell.classList.add('request-attempt-router');cell.textContent='Attempt '+attemptNumber}
+  if(attemptNumber){cell.classList.add('request-attempt-id');cell.textContent='Attempt '+attemptNumber}
   else if(controls){
-    const expanded=usageState.expandedRequests.has(item.router_request_id),button=document.createElement('button');
-    button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=item.router_request_id;
-    button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',controls.join(' '));button.setAttribute('aria-label',(expanded?'Collapse':'Expand')+' attempts for '+routerDisplay(item));button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
-    cell.appendChild(button);cell.appendChild(document.createTextNode(routerDisplay(item)));
-  }else cell.textContent=routerDisplay(item);
+    const key=requestKey(item),expanded=usageState.expandedRequests.has(key),button=document.createElement('button');
+    button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=key;
+    button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',controls.join(' '));button.setAttribute('aria-label',(expanded?'Collapse':'Expand')+' provider attempts for request '+(item.request_id||'sequence '+item.sequence));button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
+    cell.appendChild(button);cell.appendChild(document.createTextNode(item.request_id||'—'));
+  }else cell.textContent=item.request_id||'—';
   row.appendChild(cell);
 }
-function requestRow(row,item,columns,attemptNumber,controls){columns.forEach(column=>column.key==='router_model'?requestRouterCell(row,item,attemptNumber,controls):requestCell(row,item,column))}
+function requestRow(row,item,columns,attemptNumber,controls){columns.forEach(column=>column.key==='request_id'?requestIDCell(row,item,attemptNumber,controls):requestCell(row,item,column))}
 function renderRequestTable(){
   const page=usageState.requestPage;
   const columns=renderTableHeaders(requestColumns,usageState.hiddenRequestColumns,'request-headers','request-table','request',usageState.request.sort,usageState.request.order);
-  const requestIDs=new Set(page&&Array.isArray(page.items)?page.items.map(item=>item.router_request_id).filter(Boolean):[]);
+  const requestIDs=new Set(page&&Array.isArray(page.items)?page.items.map(requestKey):[]);
   usageState.expandedRequests.forEach(id=>{if(!requestIDs.has(id))usageState.expandedRequests.delete(id)});
+  const focused=document.activeElement&&document.activeElement.dataset.requestToggle;
   const fragment=document.createDocumentFragment();
   if(!page||!Array.isArray(page.items)||page.items.length===0){
     const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=columns.length;cell.className='empty-row';cell.textContent='No requests match this range.';row.appendChild(cell);fragment.appendChild(row);
-  }else page.items.forEach(item=>{
-    const attempts=Array.isArray(item.attempts)?item.attempts:[],controls=item.router_request_id&&attempts.length?requestAttemptIDs(item):null;
-    const row=document.createElement('tr');requestRow(row,item,columns,0,controls);fragment.appendChild(row);
-    if(controls)attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(item.router_request_id);requestRow(child,attempt,columns,index+1);fragment.appendChild(child)});
+  }else page.items.forEach((item,rowIndex)=>{
+    const attempts=Array.isArray(item.attempts)?item.attempts:[],controls=attempts.length?attempts.map((_,index)=>'request-attempt-'+rowIndex+'-'+index):null;
+    const row=document.createElement('tr');row.className='request-parent-row';requestRow(row,item,columns,0,controls);fragment.appendChild(row);
+    if(controls)attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(requestKey(item));requestRow(child,attempt,columns,index+1);fragment.appendChild(child)});
   });
   const total=Number(page&&page.total||0),start=total?usageState.request.offset+1:0,end=Math.min(usageState.request.offset+Number(page&&page.items&&page.items.length||0),total);
   document.getElementById('request-page-status').textContent=start+'–'+end+' of '+formatNumber(total)+' requests';
   document.getElementById('request-prev').disabled=usageState.request.offset<=0;
   document.getElementById('request-next').disabled=usageState.request.offset+usageState.request.limit>=total;
   replaceTableRows(document.getElementById('usage-requests'),document.getElementById('request-table-scroll'),fragment);
+  if(focused){const button=Array.from(document.querySelectorAll('#usage-requests [data-request-toggle]')).find(element=>element.dataset.requestToggle===focused);if(button)button.focus()}
 }
 function renderUsageDashboard(){
   renderUsageFilterOptions();
