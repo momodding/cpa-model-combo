@@ -403,41 +403,63 @@ func TestDashboardPreferenceColumnDefaults(t *testing.T) {
 	}
 }
 
-func TestDashboardPreferencesNeverHideRequiredRequestID(t *testing.T) {
-	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
+func TestDashboardPreferencesHiddenRequestColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	store, err := openUsageStore(path, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
 
 	input := defaultDashboardPreferences()
-	input.HiddenRequestColumns = []string{"time", "request_id", " request_id "}
+	input.RequestPageSize = 25
+	input.HiddenRequestColumns = []string{" request_id ", "request_endpoint", "request_id", " request_endpoint "}
+	want := []string{"request_endpoint", "request_id"}
 	saved, err := store.SavePreferences(input)
-	if err != nil || !slices.Equal(saved.HiddenRequestColumns, []string{"time"}) {
-		t.Fatalf("saved hidden request columns = %#v, %v; want [time]", saved.HiddenRequestColumns, err)
+	if err != nil || !slices.Equal(saved.HiddenRequestColumns, want) {
+		t.Fatalf("saved preferences = %#v, %v; want hidden %v", saved, err, want)
 	}
-	// Hiding every other column is valid because Request ID always stays visible.
-	input.HiddenRequestColumns = slices.Clone(requestColumnFields)
-	if saved, err = store.SavePreferences(input); err != nil || slices.Contains(saved.HiddenRequestColumns, "request_id") || len(saved.HiddenRequestColumns) != len(requestColumnFields)-1 {
-		t.Fatalf("saved all-hidden request columns = %#v, %v", saved.HiddenRequestColumns, err)
+	if loaded, err := store.QueryPreferences(); err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, want) {
+		t.Fatalf("loaded preferences = %#v, %v", loaded, err)
 	}
-	var persisted []byte
-	if err := store.db.QueryRow(`SELECT preferences_json FROM store_state WHERE id = 1`).Scan(&persisted); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var decoded dashboardPreferences
-	if err := json.Unmarshal(persisted, &decoded); err != nil || slices.Contains(decoded.HiddenRequestColumns, "request_id") || len(decoded.HiddenRequestColumns) != len(requestColumnFields)-1 {
-		t.Fatalf("persisted preferences = %#v, %v", decoded, err)
+	store, err = openUsageStore(path, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.QueryPreferences(); err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, want) {
+		t.Fatalf("reopened preferences = %#v, %v", loaded, err)
 	}
 
-	// Preferences persisted before Request ID became required must be normalized on load.
+	input.HiddenRequestColumns = slices.Clone(requestColumnFields)
+	if _, err := store.SavePreferences(input); err == nil {
+		t.Fatal("saving all hidden request columns succeeded")
+	}
+	if loaded, err := store.QueryPreferences(); err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, want) {
+		t.Fatalf("rejected save overwrote preferences = %#v, %v", loaded, err)
+	}
+	input.HiddenRequestColumns = slices.Clone(requestColumnFields[1:])
+	if saved, err := store.SavePreferences(input); err != nil || len(saved.HiddenRequestColumns) != len(requestColumnFields)-1 || slices.Contains(saved.HiddenRequestColumns, "request_id") {
+		t.Fatalf("saving all but request_id hidden = %#v, %v", saved, err)
+	}
+	input.HiddenRequestColumns = []string{"request_id", "not_a_column"}
+	if _, err := store.SavePreferences(input); err == nil {
+		t.Fatal("saving an unknown request column succeeded")
+	}
+
 	legacy := `{"request_page_size":25,"hidden_request_columns":["request_id","cost"]}`
 	if _, err := store.db.Exec(`UPDATE store_state SET preferences_json = ? WHERE id = 1`, []byte(legacy)); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := store.QueryPreferences()
-	if err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, []string{"cost"}) {
-		t.Fatalf("loaded legacy preferences = %#v, %v; want hidden [cost]", loaded, err)
+	if err != nil || loaded.RequestPageSize != 25 || !slices.Equal(loaded.HiddenRequestColumns, []string{"request_id", "cost"}) {
+		t.Fatalf("loaded legacy preferences = %#v, %v", loaded, err)
 	}
 }
 
