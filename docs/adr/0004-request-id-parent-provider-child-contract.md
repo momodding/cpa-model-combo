@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0005](0005-stock-cpa-usage-identity-limits.md).
 
 ## Decision
 
