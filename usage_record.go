@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // HandleUsage records provider usage callbacks independently of routing execution.
@@ -17,10 +17,11 @@ func (p *modelRouterPlugin) HandleUsage(_ context.Context, record pluginapi.Usag
 		return
 	}
 	attribution := attributionResult{Kind: attributionUnresolved}
-	if p.attribution != nil {
+	if p.attribution != nil && strings.TrimSpace(record.TraceID) == "" {
 		attribution = p.attribution.Match(record)
 	}
 	stored := storedRecordFromUsage(record, attribution)
+	stored.CredentialLabel = p.credentials.label(record.AuthID, record.AuthIndex)
 	_ = p.store.Record(stored)
 }
 
@@ -40,6 +41,10 @@ func storedRecordFromUsage(record pluginapi.UsageRecord, attribution attribution
 		RouterModel:         attribution.RouterModel,
 		RouterRequestID:     attribution.RouterRequestID,
 		RouterAttempt:       attribution.Attempt,
+		TraceID:             strings.TrimSpace(record.TraceID),
+		RequestID:           strings.TrimSpace(record.RequestID),
+		AuthID:              strings.TrimSpace(record.AuthID),
+		AuthIndex:           strings.TrimSpace(record.AuthIndex),
 		Provider:            strings.TrimSpace(record.Provider),
 		ExecutorType:        strings.TrimSpace(record.ExecutorType),
 		AccountingMode:      accountingMode,
@@ -130,11 +135,8 @@ func looksLikeCredential(value string) bool {
 	if value == "" {
 		return false
 	}
-	lower := strings.ToLower(value)
-	for _, prefix := range []string{"bearer ", "basic ", "token ", "apikey ", "api-key ", "api_key ", "sk-", "sk_", "xai-", "gsk_", "aiza", "key-", "sess-"} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
+	if hasCredentialPrefix(value) {
+		return true
 	}
 	if len(value) < 8 || strings.ContainsAny(value, " \t\r\n") {
 		return false
@@ -149,6 +151,16 @@ func looksLikeCredential(value string) bool {
 		}
 	}
 	return letters > 0 || digits > 0
+}
+
+func hasCredentialPrefix(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{"bearer ", "basic ", "token ", "apikey ", "api-key ", "api_key ", "sk-", "sk_", "xai-", "gsk_", "aiza", "key-", "sess-"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func durationUint64(value time.Duration) uint64 {

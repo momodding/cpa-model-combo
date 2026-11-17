@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	usageStorageSchemaVersion = 2
+	usageStorageSchemaVersion = 3
 	sqliteBusyTimeoutMS       = 5000
 )
 
@@ -34,18 +34,24 @@ type usageStore struct {
 	lastError     string
 }
 
+// storedRequestSession is one inbound CPA request, keyed by (TraceID, LifecycleRequestID).
+// It is stored apart from provider usage and is never an accounting input.
+// LegacyRequestID and Attribution are set only on sessions migrated from schema 2, where the
+// request ID was the sole key; they let pre-v8 usage rows (RequestID, no TraceID) keep joining.
 type storedRequestSession struct {
-	RequestID      string    `json:"request_id"`
-	Endpoint       string    `json:"endpoint"`
-	RequestedModel string    `json:"requested_model"`
-	RouterModel    string    `json:"router_model"`
-	Attribution    string    `json:"attribution"`
-	Stream         bool      `json:"stream"`
-	Outcome        string    `json:"outcome"`
-	StatusCode     int       `json:"status_code"`
-	StartedAt      time.Time `json:"started_at"`
-	CompletedAt    time.Time `json:"completed_at"`
-	LatencyNS      uint64    `json:"latency_ns"`
+	TraceID            string        `json:"trace_id"`
+	LifecycleRequestID string        `json:"lifecycle_request_id"`
+	LegacyRequestID    string        `json:"request_id,omitempty"`
+	RequestEndpoint    string        `json:"request_endpoint,omitempty"`
+	RequestedModel     string        `json:"requested_model,omitempty"`
+	RouterModel        string        `json:"router_model,omitempty"`
+	Attribution        string        `json:"attribution,omitempty"`
+	Stream             bool          `json:"stream"`
+	StartedAt          time.Time     `json:"started_at"`
+	CompletedAt        time.Time     `json:"completed_at"`
+	Outcome            string        `json:"outcome,omitempty"`
+	HTTPStatus         int           `json:"http_status,omitempty"`
+	Latency            time.Duration `json:"latency_ns,omitempty"`
 }
 
 type minuteAggregate struct {
@@ -243,46 +249,71 @@ func initializeSQLiteDatabase(database *sql.DB) error {
 			payload BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS minute_aggregates_minute ON minute_aggregates(minute_ns)`,
-		`INSERT OR IGNORE INTO store_state(id, storage_schema_version, next_sequence) VALUES (1, ?, 0)`,
 	}
-	for index, statement := range statements {
-		if index == len(statements)-1 {
-			if _, err := database.Exec(statement, 1); err != nil {
-				return fmt.Errorf("initialize SQLite state: %w", err)
-			}
-			continue
-		}
-		if _, err := database.Exec(statement); err != nil {
+	// One transaction: every schema step and the version bump commit atomically or not at all.
+	transaction, err := database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema initialization: %w", err)
+	}
+	defer transaction.Rollback()
+	for _, statement := range statements {
+		if _, err := transaction.Exec(statement); err != nil {
 			return fmt.Errorf("initialize SQLite schema: %w", err)
 		}
 	}
+	if _, err := transaction.Exec(`INSERT OR IGNORE INTO store_state(id, storage_schema_version, next_sequence) VALUES (1, ?, 0)`, usageStorageSchemaVersion); err != nil {
+		return fmt.Errorf("initialize SQLite state: %w", err)
+	}
 	var version int
-	if err := database.QueryRow("SELECT storage_schema_version FROM store_state WHERE id = 1").Scan(&version); err != nil {
+	if err := transaction.QueryRow("SELECT storage_schema_version FROM store_state WHERE id = 1").Scan(&version); err != nil {
 		return fmt.Errorf("read SQLite storage schema: %w", err)
 	}
 	if version > usageStorageSchemaVersion {
 		return fmt.Errorf("usage database storage schema %d is newer than supported schema %d", version, usageStorageSchemaVersion)
 	}
+	if version < 1 {
+		return fmt.Errorf("usage database storage schema %d requires an unsupported migration", version)
+	}
 	if version == 1 {
-		transaction, err := database.Begin()
-		if err != nil {
-			return fmt.Errorf("begin SQLite storage migration: %w", err)
+		if _, err := transaction.Exec(`CREATE TABLE request_sessions (request_id TEXT PRIMARY KEY, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`); err != nil {
+			return fmt.Errorf("migrate SQLite storage schema 1 to 2: %w", err)
 		}
-		defer transaction.Rollback()
+		version = 2
+	}
+	if version == 2 {
+		var invalid int
+		if err := transaction.QueryRow(`SELECT COUNT(*) FROM request_sessions WHERE CASE WHEN json_valid(payload) THEN json_type(payload) != 'object' ELSE 1 END`).Scan(&invalid); err != nil {
+			return fmt.Errorf("inspect legacy request sessions: %w", err)
+		}
+		if invalid != 0 {
+			return errors.New("migrate SQLite storage schema: invalid legacy request session payload")
+		}
 		for _, statement := range []string{
-			`CREATE TABLE request_sessions (request_id TEXT PRIMARY KEY, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
-			`CREATE INDEX request_sessions_started_at ON request_sessions(started_at_ns)`,
-			`UPDATE store_state SET storage_schema_version = 2 WHERE id = 1`,
+			`ALTER TABLE request_sessions RENAME TO request_sessions_v2`,
+			`CREATE TABLE request_sessions (trace_id TEXT NOT NULL, lifecycle_request_id TEXT NOT NULL, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY (trace_id, lifecycle_request_id))`,
+			`INSERT INTO request_sessions(trace_id, lifecycle_request_id, started_at_ns, payload)
+			 SELECT request_id, request_id, started_at_ns,
+			 json_set(payload, '$.request_id', COALESCE(json_extract(payload, '$.request_id'), request_id), '$.trace_id', request_id, '$.lifecycle_request_id', request_id, '$.request_endpoint', json_extract(payload, '$.endpoint'), '$.http_status', json_extract(payload, '$.status_code')) FROM request_sessions_v2`,
+			`DROP TABLE request_sessions_v2`,
 		} {
 			if _, err := transaction.Exec(statement); err != nil {
-				return fmt.Errorf("migrate SQLite storage schema: %w", err)
+				return fmt.Errorf("migrate SQLite storage schema 2 to 3: %w", err)
 			}
 		}
-		if err := transaction.Commit(); err != nil {
-			return fmt.Errorf("commit SQLite storage migration: %w", err)
+	}
+	if version < 3 {
+		if _, err := transaction.Exec(`UPDATE store_state SET storage_schema_version = ? WHERE id = 1`, usageStorageSchemaVersion); err != nil {
+			return fmt.Errorf("migrate SQLite storage schema: %w", err)
 		}
-	} else if version != usageStorageSchemaVersion {
-		return fmt.Errorf("usage database storage schema %d requires an unsupported migration", version)
+	}
+	if _, err := transaction.Exec(`CREATE TABLE IF NOT EXISTS request_sessions (trace_id TEXT NOT NULL, lifecycle_request_id TEXT NOT NULL, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY (trace_id, lifecycle_request_id))`); err != nil {
+		return fmt.Errorf("initialize request sessions: %w", err)
+	}
+	if _, err := transaction.Exec(`CREATE INDEX IF NOT EXISTS request_sessions_started_at ON request_sessions(started_at_ns)`); err != nil {
+		return fmt.Errorf("initialize request sessions index: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema initialization: %w", err)
 	}
 	return nil
 }
@@ -349,33 +380,102 @@ func (store *usageStore) Record(record storedUsageRecord) error {
 	return err
 }
 
+// RecordSession upserts one parent session keyed by (TraceID, LifecycleRequestID). Interception and
+// completion may arrive in either order: a start-only write never erases an existing completion, and
+// empty descriptive fields never erase known ones.
 func (store *usageStore) RecordSession(session storedRequestSession) error {
+	_, err := store.writeSession(session, true)
+	return err
+}
+
+// CompleteSession merges a completion into an already stored session and reports whether one existed.
+// It never inserts, so completions without a captured start (e.g. nested host callbacks) leave no row.
+func (store *usageStore) CompleteSession(session storedRequestSession) (bool, error) {
+	return store.writeSession(session, false)
+}
+
+func (store *usageStore) writeSession(session storedRequestSession, insert bool) (bool, error) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 	if store.db == nil {
-		return errors.New("usage database is closed")
+		return false, errors.New("usage database is closed")
 	}
-	value, err := json.Marshal(session)
-	if err == nil {
-		var transaction *sql.Tx
-		transaction, err = store.db.Begin()
-		if err == nil {
-			defer transaction.Rollback()
-			_, err = transaction.Exec(`INSERT INTO request_sessions(request_id, started_at_ns, payload) VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET started_at_ns = excluded.started_at_ns, payload = excluded.payload`, session.RequestID, session.StartedAt.UTC().UnixNano(), value)
-			if err == nil {
-				err = pruneSQLiteTransaction(transaction, store.retentionDays, time.Now().UTC(), false)
-			}
-			if err == nil {
-				err = transaction.Commit()
-			}
+	found := false
+	err := func() error {
+		if session.TraceID == "" && session.LifecycleRequestID == "" {
+			return errors.New("request session requires a trace or lifecycle request ID")
 		}
-	}
+		transaction, err := store.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer transaction.Rollback()
+		var raw []byte
+		err = transaction.QueryRow(`SELECT payload FROM request_sessions WHERE trace_id = ? AND lifecycle_request_id = ?`, session.TraceID, session.LifecycleRequestID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			found = true
+			var existing storedRequestSession
+			if err := json.Unmarshal(raw, &existing); err != nil {
+				return fmt.Errorf("decode request session: %w", err)
+			}
+			session = mergeRequestSession(existing, session)
+		} else if !insert {
+			return nil
+		}
+		if session.StartedAt.IsZero() {
+			return errors.New("request session requires started_at")
+		}
+		value, err := json.Marshal(session)
+		if err != nil {
+			return err
+		}
+		if _, err := transaction.Exec(`INSERT INTO request_sessions(trace_id, lifecycle_request_id, started_at_ns, payload) VALUES (?, ?, ?, ?)
+			ON CONFLICT(trace_id, lifecycle_request_id) DO UPDATE SET started_at_ns = excluded.started_at_ns, payload = excluded.payload`,
+			session.TraceID, session.LifecycleRequestID, session.StartedAt.UTC().UnixNano(), value); err != nil {
+			return err
+		}
+		if err := pruneSQLiteTransaction(transaction, store.retentionDays, time.Now().UTC(), false); err != nil {
+			return err
+		}
+		return transaction.Commit()
+	}()
 	if err != nil {
 		store.recordError(err)
+		log.Printf("model-router: persist request session: %v", err)
 	} else {
 		store.clearError()
 	}
-	return err
+	return found, err
+}
+
+func mergeRequestSession(existing, incoming storedRequestSession) storedRequestSession {
+	merged := incoming
+	if merged.LegacyRequestID == "" {
+		merged.LegacyRequestID = existing.LegacyRequestID
+	}
+	if merged.Attribution == "" {
+		merged.Attribution = existing.Attribution
+	}
+	if merged.RequestEndpoint == "" {
+		merged.RequestEndpoint = existing.RequestEndpoint
+	}
+	if merged.RequestedModel == "" {
+		merged.RequestedModel = existing.RequestedModel
+	}
+	if merged.RouterModel == "" {
+		merged.RouterModel = existing.RouterModel
+	}
+	merged.Stream = incoming.Stream || existing.Stream
+	if merged.StartedAt.IsZero() || (!existing.StartedAt.IsZero() && existing.StartedAt.Before(merged.StartedAt)) {
+		merged.StartedAt = existing.StartedAt
+	}
+	if incoming.CompletedAt.IsZero() {
+		merged.CompletedAt, merged.Outcome, merged.HTTPStatus, merged.Latency = existing.CompletedAt, existing.Outcome, existing.HTTPStatus, existing.Latency
+	}
+	return merged
 }
 
 func updateMinuteAggregateSQLite(transaction *sql.Tx, record storedUsageRecord) error {
@@ -533,13 +633,13 @@ func scanUsageRecords(connection *sql.Conn, filter usageFilter, visit func(store
 }
 
 func scanRequestSessions(connection *sql.Conn, visit func(storedRequestSession)) error {
-	rows, err := connection.QueryContext(context.Background(), `SELECT payload FROM request_sessions ORDER BY started_at_ns, request_id`)
+	rows, err := connection.QueryContext(context.Background(), `SELECT payload FROM request_sessions ORDER BY started_at_ns, trace_id, lifecycle_request_id`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	var value sql.RawBytes
 	for rows.Next() {
-		var value sql.RawBytes
 		if err := rows.Scan(&value); err != nil {
 			return err
 		}

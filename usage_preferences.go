@@ -117,7 +117,7 @@ func normalizeColumnList(input, allowed []string) ([]string, error) {
 }
 
 var requestColumnFields = []string{
-	"request_id", "request_endpoint", "requested_model", "time", "router_model", "provider_model", "provider", "source", "service_tier", "result", "latency", "ttft", "tps",
+	"request_id", "trace_id", "request_endpoint", "requested_model", "credential", "time", "router_model", "provider_model", "provider", "source", "service_tier", "result", "latency", "ttft", "tps",
 	"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "cost", "api_key",
 }
 

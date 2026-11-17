@@ -29,8 +29,8 @@ func TestWorkflowYAML(t *testing.T) {
 func TestWorkflowRunnersAndActionRuntimes(t *testing.T) {
 	allowedRunners := map[string]map[string]bool{
 		".github/workflows/test.yml": {
-			"ubuntu-latest":  true,
-			"windows-latest": true,
+			"${{ matrix.runner }}": true,
+			"windows-latest":       true,
 		},
 		".github/workflows/codeql.yml": {
 			"ubuntu-latest": true,
@@ -87,9 +87,16 @@ func TestWorkflowPinsMinimumCPAIntegration(t *testing.T) {
 	workflow := string(raw)
 	for _, required := range []string{
 		"repository: router-for-me/CLIProxyAPI",
-		"ref: 61fdfc341b96178a8dcb53f2efc46cbc341d267c",
+		"ref: ce07d189b3de2a39d37fd68ae093b102ce3aabee",
+		"runner: ubuntu-latest",
+		"runner: ubuntu-24.04-arm",
 		"path: .cpa-source",
 		`CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1`,
+		"CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o dist/model-combo-v1.0.1.so .",
+		"npm ci",
+		"npm run test:e2e",
+		"exit \"$status\"",
+		"/v0/resource/plugins/model-combo/config",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("test workflow is missing %q", required)

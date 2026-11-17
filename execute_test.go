@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type fakeModelHost struct {
@@ -23,6 +23,33 @@ type fakeModelHost struct {
 	startCalls   []pluginapi.HostModelExecutionRequest
 	emitted      [][]byte
 	closed       []string
+}
+
+type routingCatalogHost struct {
+	*fakeModelHost
+	models     []pluginapi.HostAuthModels
+	entries    []pluginapi.HostAuthFileEntry
+	catalogErr error
+	modelCalls int
+	listCalls  int
+}
+
+func (host *routingCatalogHost) AuthModels() ([]pluginapi.HostAuthModels, error) {
+	host.modelCalls++
+	return host.models, host.catalogErr
+}
+
+func (host *routingCatalogHost) AuthList() ([]pluginapi.HostAuthFileEntry, error) {
+	host.listCalls++
+	return host.entries, host.catalogErr
+}
+
+func routingTestHost() *routingCatalogHost {
+	return &routingCatalogHost{fakeModelHost: &fakeModelHost{}, models: []pluginapi.HostAuthModels{
+		{ID: "a", Provider: "one", Models: []string{"model-a"}},
+		{ID: "b", Provider: "two", Models: []string{"model-a", "model-b"}},
+		{ID: "c", Provider: "three", Models: []string{"model-a", "model-b"}},
+	}}
 }
 
 func (host *fakeModelHost) Execute(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -340,6 +367,142 @@ func TestExecuteWithHostLastKnownGoodRecordsOnlyHostSuccess(t *testing.T) {
 	}
 	if len(host.executeCalls) != 1 || host.executeCalls[0].Model != "b" {
 		t.Fatalf("calls after success = %#v, want only b", host.executeCalls)
+	}
+}
+
+func TestRestrictedExecuteAccountFailover(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.AuthID == "a" {
+			return pluginapi.HostModelExecutionResponse{StatusCode: 429, Body: []byte("secret upstream body")}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200, Body: []byte(`{"model":"model-a(high)"}`)}, nil
+	}
+	for range 2 {
+		if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart(high)"}, host); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(host.executeCalls) != 4 || host.modelCalls != 2 || host.listCalls != 2 {
+		t.Fatalf("calls = %#v, catalog calls = %d/%d", host.executeCalls, host.modelCalls, host.listCalls)
+	}
+	for i, call := range host.executeCalls {
+		wantID, wantProvider := "a", "one"
+		if i%2 == 1 {
+			wantID, wantProvider = "b", "two"
+		}
+		if call.AuthID != wantID || call.ForcedProvider != wantProvider || call.Model != "model-a(high)" {
+			t.Fatalf("call %d = %#v", i, call)
+		}
+	}
+}
+
+func TestRestrictedExecuteFallbackAndFailClosed(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.AllowedAccounts = []string{"a", "b", "missing"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.entries = []pluginapi.HostAuthFileEntry{{ID: "a", Disabled: true}}
+	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Model == "model-a" {
+			return pluginapi.HostModelExecutionResponse{StatusCode: 429}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "b" || host.executeCalls[1].AuthID != "b" || host.executeCalls[1].Model != "model-b" {
+		t.Fatalf("calls = %#v", host.executeCalls)
+	}
+	route.AllowedAccounts = []string{"missing", "a"}
+	plugin = testRouterPlugin(route)
+	host.executeCalls = nil
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 0 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+	host.catalogErr = errors.New("secret catalog failure")
+	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if codeFromError(err, "") != "model_route_unavailable" || strings.Contains(err.Error(), "secret") || len(host.executeCalls) != 0 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+}
+
+func TestRestrictedExecuteTerminalAndCooldown(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 400, Body: []byte("secret")}, nil
+	}
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if statusFromError(err) != 400 || strings.Contains(err.Error(), "secret") || len(host.executeCalls) != 1 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 429}, nil
+	}
+	host.executeCalls = nil
+	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if codeFromError(err, "") != "model_route_cooldown" || len(host.executeCalls) != 2 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+}
+
+func TestRestrictedExecuteCancellationStopsDespiteStatus(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 429, Body: []byte("secret")}, context.DeadlineExceeded
+	}
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if !errors.Is(err, context.DeadlineExceeded) || len(host.executeCalls) != 1 {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatalf("terminal error cooled route: %v", err)
+	}
+}
+
+func TestRestrictedExecuteRespectsTargetAttemptLimit(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	plugin.config.MaxAttempts = 1
+	host := routingTestHost()
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 429}, nil
+	}
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "a" || host.executeCalls[1].AuthID != "b" {
+		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+}
+
+func TestUnrestrictedExecuteLeavesAccountSelectionToHost(t *testing.T) {
+	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "model-a"))
+	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.AuthID != "" || request.ForcedProvider != "" {
+			t.Fatalf("unrestricted request pinned: %#v", request)
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatal(err)
 	}
 }
 
