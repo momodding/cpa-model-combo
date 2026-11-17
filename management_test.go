@@ -103,7 +103,6 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 		"<select data-target-field=\"model\"",
 		"data-target-field=\"weight\"",
 		"data-target-help",
-		"unavailable.textContent=model+(supported?'':' (unavailable)')",
 		"data-action=\"add-target\"",
 		"role=\"tablist\" aria-label=\"Model Combo sections\"",
 		"id=\"configuration-tab\" class=\"page-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"",
@@ -421,6 +420,7 @@ func TestModelRouterManagementAccountCatalogAndRestrictedValidation(t *testing.T
 			{ID: "a.json", Provider: "codex", Models: []string{"gpt-5"}},
 			{ID: "b.json", Provider: "claude", Models: []string{"claude-x"}},
 			{ID: "off.json", Provider: "codex", Models: []string{"gpt-5"}},
+			{ID: "unknown.json", Provider: "codex"},
 		},
 		files: []pluginapi.HostAuthFileEntry{{ID: "off.json", Disabled: true}},
 	}
@@ -432,16 +432,22 @@ func TestModelRouterManagementAccountCatalogAndRestrictedValidation(t *testing.T
 		name, body, field string
 		status            int
 	}{
-		{"valid", `{"routes":[{"alias":"auto","models":["gpt-5(high)","claude-x"],"allowed_accounts":["a.json","b.json"]}]}`, "", http.StatusOK},
-		{"unrestricted skips catalog", `{"routes":[{"alias":"auto","models":["missing"],"allowed_accounts":[]}]}`, "", http.StatusOK},
-		{"unknown account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["gone.json"]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
-		{"disabled account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["off.json"]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
-		{"account without target", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json","b.json"]}]}`, "routes[0].allowed_accounts[1]", http.StatusBadRequest},
-		{"target without account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5"},{"model":"claude-x"}],"allowed_accounts":["a.json"]}]}`, "routes[0].targets[1]", http.StatusBadRequest},
-		{"blank account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":[" "]}]}`, "", http.StatusBadRequest},
-		{"non-string account", `{"routes":[{"alias":"x","models":["gpt-5"]},{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json",1]}]}`, "routes[1].allowed_accounts[1]", http.StatusBadRequest},
-		{"non-array accounts", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":"a.json"}]}`, "routes[0].allowed_accounts", http.StatusBadRequest},
-		{"boolean account", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":[true]}]}`, "routes[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"valid", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5(high)","allowed_accounts":["a.json"]},{"model":"claude-x","allowed_accounts":["b.json"]}]}]}`, "", http.StatusOK},
+		{"unknown support", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["unknown.json"]}]}]}`, "", http.StatusOK},
+		{"unrestricted skips catalog", `{"routes":[{"alias":"auto","targets":[{"model":"missing","allowed_accounts":[]}]}]}`, "", http.StatusOK},
+		{"unknown account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["gone.json"]}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"disabled account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["off.json"]}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"unsupported account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["a.json","b.json"]}]}]}`, "routes[0].targets[0].allowed_accounts[1]", http.StatusBadRequest},
+		{"second target unsupported", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["a.json"]},{"model":"claude-x","allowed_accounts":["a.json"]}]}]}`, "routes[0].targets[1].allowed_accounts[0]", http.StatusBadRequest},
+		{"blank account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":[" "]}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"non-string account", `{"routes":[{"alias":"x","models":["gpt-5"]},{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["a.json",1]}]}]}`, "routes[1].targets[0].allowed_accounts[1]", http.StatusBadRequest},
+		{"non-array accounts", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":"a.json"}]}]}`, "routes[0].targets[0].allowed_accounts", http.StatusBadRequest},
+		{"boolean account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":[true]}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"null account list", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":null}]}]}`, "routes[0].targets[0].allowed_accounts", http.StatusBadRequest},
+		{"null account", `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":[null]}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"empty target overrides legacy", `{"routes":[{"alias":"auto","allowed_accounts":["gone.json"],"targets":[{"model":"gpt-5","allowed_accounts":[]}]}]}`, "", http.StatusOK},
+		{"target inherits legacy", `{"routes":[{"alias":"auto","allowed_accounts":["gone.json"],"targets":[{"model":"gpt-5"}]}]}`, "routes[0].targets[0].allowed_accounts[0]", http.StatusBadRequest},
+		{"legacy route accounts", `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json"]}]}`, "", http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := handleModelRouterManagementWithHost(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterValidationPath, Body: []byte(test.body)}, host)
@@ -450,7 +456,7 @@ func TestModelRouterManagementAccountCatalogAndRestrictedValidation(t *testing.T
 			}
 		})
 	}
-	restricted := `{"routes":[{"alias":"auto","models":["gpt-5"],"allowed_accounts":["a.json"]}]}`
+	restricted := `{"routes":[{"alias":"auto","targets":[{"model":"gpt-5","allowed_accounts":["a.json"]}]}]}`
 	for name, unavailable := range map[string]modelHost{
 		"callback failure": &fakeCatalogHost{modelsErr: errors.New("sk-secret")},
 		"no callback":      nil,

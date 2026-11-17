@@ -70,11 +70,16 @@
 
 <template id="target-template">
   <div class="target-row">
+    <span class="target-drag" data-target-drag draggable="true" title="Drag to reorder target" aria-hidden="true">⋮⋮</span>
     <span class="target-number"></span>
     <select data-target-field="model" aria-label="CPA model target"></select>
     <label class="target-weight"><span class="sr-only">Round-robin weight</span><input type="number" data-target-field="weight" min="1" max="1000000" step="1" inputmode="numeric" aria-label="Round-robin weight"></label>
     <button class="icon-button" type="button" data-action="target-up" aria-label="Move target up">↑</button>
     <button class="icon-button" type="button" data-action="target-down" aria-label="Move target down">↓</button>
     <button class="danger-button" type="button" data-action="remove-target">Remove</button>
+    <div class="target-account-control">
+      <button class="secondary" type="button" data-action="toggle-accounts" aria-expanded="false">All accounts</button>
+      <div class="target-accounts" hidden></div>
+    </div>
   </div>
 </template>

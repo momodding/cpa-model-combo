@@ -55,8 +55,8 @@ function statusCell(row,result){
   cell.className='text-cell';
   const badge=document.createElement('span');
   badge.className='status-pill '+(result==='success'?'success':'failure');
-  if(result==='unknown')badge.className='status-pill';
-  badge.textContent=result==='unknown'?'Unknown':String(result||'').startsWith('http_')?'Failed · '+resultDisplay(result):resultDisplay(result);
+  if(result==='unknown'||result==='cooling_down')badge.className='status-pill';
+  badge.textContent=result==='cooling_down'?'Cooling down':result==='unknown'?'Unknown':String(result||'').startsWith('http_')?'Failed · '+resultDisplay(result):resultDisplay(result);
   cell.appendChild(badge);row.appendChild(cell);
 }
 function groupCell(row,item,column){
@@ -76,7 +76,7 @@ function groupCell(row,item,column){
 const requestValueFields={provider_model:'provider_model',provider:'provider',source:'source',credential:'credential_label'};
 // Parents carry no execution identity, so they summarize their delivered children. A blank credential label is never replaced by an ID or token.
 function requestValue(item,key,child){
-  const attempts=!child&&Array.isArray(item.attempts)?item.attempts:[];
+  const attempts=!child&&Array.isArray(item.attempts)?item.attempts.filter(attempt=>attempt.dispatched!==false):[];
   if(attempts.length)return Array.from(new Set(attempts.map(attempt=>requestValue(attempt,key,true)).filter(Boolean))).join(', ');
   const own=String(item[requestValueFields[key]]||'').trim();
   if(own)return own;
@@ -84,6 +84,7 @@ function requestValue(item,key,child){
   return key==='provider_model'&&!child?'No executions recorded':'';
 }
 function requestCell(row,item,column,parent){
+  if(parent&&item.dispatched===false&&!['time','trace_id','request_endpoint','requested_model','router_model','provider_model','provider','source','credential','result'].includes(column.key))return tableCell(row,'—');
   switch(column.key){
   case 'request_id':return tableCell(row,item.request_id,true);
   case 'time':return tableCell(row,formatRequestTime(item.requested_at),true);
@@ -93,7 +94,7 @@ function requestCell(row,item,column,parent){
   case 'router_model':return tableCell(row,routerDisplay(item),true);
   case 'provider_model':case 'provider':case 'source':case 'credential':return tableCell(row,requestValue(item,column.key,Boolean(parent)),true);
   case 'service_tier':return tableCell(row,item.service_tier,true);
-  case 'result':return statusCell(row,item.result);
+  case 'result':return statusCell(row,item.dispatched===false?item.status:item.result);
   case 'latency':return tableCell(row,formatDuration(item.latency_ns));
   case 'ttft':return tableCell(row,formatDuration(item.ttft_ns));
   case 'tps':return tableCell(row,formatTPS(item.tps));
@@ -132,14 +133,16 @@ function requestRow(row,item,columns,options){
   columns.forEach(column=>requestCell(row,item,column,options.parent));
   const cell=row.firstElementChild;
   if(options.ordinal){
-    const label=document.createElement('span');label.className='request-ordinal';label.textContent='Execution '+options.ordinal;cell.prepend(label);
+    const label=document.createElement('span');label.className='request-ordinal';label.textContent=item.dispatched===false?'Skipped '+(item.order||options.ordinal):'Execution '+options.ordinal;cell.prepend(label);
+    if(item.dispatched===false&&item.retry_at){const retry=document.createElement('span');retry.textContent='Retry at '+formatRequestTime(item.retry_at);cell.append(retry)}
   }else if(options.controls){
     const key=requestKey(item),expanded=usageState.expandedRequests.has(key),button=document.createElement('button'),count=document.createElement('span');
+    const noun=item.attempts.some(attempt=>attempt.dispatched===false)?'attempt':'execution';
     button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=key;
     button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',options.controls.join(' '));
-    button.setAttribute('aria-label',(expanded?'Collapse ':'Expand ')+options.controls.length+' executions for '+(item.trace_id?'trace '+item.trace_id:'request'));
+    button.setAttribute('aria-label',(expanded?'Collapse ':'Expand ')+options.controls.length+' '+noun+(options.controls.length===1?'':'s')+' for '+(item.trace_id?'trace '+item.trace_id:'request'));
     button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
-    count.className='request-count';count.textContent=' '+options.controls.length+(options.controls.length===1?' execution':' executions');
+    count.className='request-count';count.textContent=' '+options.controls.length+' '+noun+(options.controls.length===1?'':'s');
     cell.prepend(button);cell.append(count);
   }else{
     const spacer=document.createElement('span');spacer.className='request-attempt-toggle';spacer.setAttribute('aria-hidden','true');cell.prepend(spacer);
@@ -160,7 +163,7 @@ function renderRequestTable(){
   }else page.items.forEach((item,rowIndex)=>{
     const attempts=Array.isArray(item.attempts)?item.attempts:[],controls=attempts.length?attempts.map((_,index)=>'request-attempt-'+rowIndex+'-'+index):null;
     const row=document.createElement('tr');row.className='request-parent-row';requestRow(row,item,columns,{controls});fragment.appendChild(row);
-    if(controls)attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(requestKey(item));requestRow(child,attempt,columns,{ordinal:index+1,parent:item});fragment.appendChild(child)});
+    if(controls){let executions=0;attempts.forEach((attempt,index)=>{const child=document.createElement('tr');child.id=controls[index];child.className='request-attempt-row';child.hidden=!usageState.expandedRequests.has(requestKey(item));requestRow(child,attempt,columns,{ordinal:attempt.dispatched===false?index+1:++executions,parent:item});fragment.appendChild(child)})}
   });
   replaceTableRows(document.getElementById('usage-requests'),document.getElementById('request-table-scroll'),fragment);
   const total=Number(page&&page.total||0),start=total?usageState.request.offset+1:0,end=Math.min(usageState.request.offset+Number(page&&page.items&&page.items.length||0),total);
@@ -170,6 +173,7 @@ function renderRequestTable(){
   if(focused){const button=Array.from(document.querySelectorAll('#usage-requests [data-request-toggle]')).find(element=>element.dataset.requestToggle===focused);if(button)button.focus({preventScroll:true})}
 }
 function renderUsageDashboard(){
+  renderUsageSummary();
   renderUsageFilterOptions();
   renderGroupTable();
   renderRequestTable();

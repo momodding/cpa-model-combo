@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -95,5 +97,106 @@ func TestMaskAPIKey(t *testing.T) {
 		if got := maskAPIKey(input); got != want {
 			t.Fatalf("maskAPIKey(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestCorrelationLifecycleAndSpoofRejection(t *testing.T) {
+	now := time.Now().UTC()
+	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tracker := newAttributionTracker(func() time.Time { return now })
+	p := &modelRouterPlugin{config: routerConfig{Enabled: true, Routes: []modelRoute{{Alias: "auto"}}}, attribution: tracker, store: store}
+	request := pluginapi.RequestInterceptRequest{RequestID: "one", TraceID: "trace-one", RequestedModel: "auto", Headers: http.Header{correlationHeader: {"spoof"}}}
+	first, err := p.InterceptRequestBeforeAuth(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := first.Headers.Get(correlationHeader)
+	if token == "" || token == "spoof" || len(first.ClearHeaders) != 1 || first.ClearHeaders[0] != correlationHeader {
+		t.Fatalf("interception = %#v", first)
+	}
+	request.RequestID, request.TraceID = "two", "trace-two"
+	second, err := p.InterceptRequestBeforeAuth(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Headers.Get(correlationHeader) == token {
+		t.Fatal("correlation tokens reused")
+	}
+	identity := p.resolveCorrelation(first.Headers)
+	if identity.TraceID != "trace-one" || identity.LifecycleRequestID != "one" {
+		t.Fatalf("identity = %#v", identity)
+	}
+	if got := p.resolveCorrelation(http.Header{correlationHeader: {"spoof"}}); got != (correlationIdentity{}) {
+		t.Fatalf("spoof accepted: %#v", got)
+	}
+	p.recordRoutingSkip(identity, routingSkip{Model: "first"})
+	if got := p.nextCorrelationAttempt(identity); got != 1 {
+		t.Fatalf("dispatch ordinal = %d", got)
+	}
+	p.recordRoutingSkip(p.resolveCorrelation(first.Headers), routingSkip{Model: "second"})
+	if events := tracker.correlations[token].skips; len(events) != 2 || events[0].Attempt != 0 || events[1].Attempt != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	var persisted int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM routing_skips WHERE trace_id = ? AND lifecycle_request_id = ?`, "trace-one", "one").Scan(&persisted); err != nil || persisted != 2 {
+		t.Fatalf("persisted skips = %d, %v", persisted, err)
+	}
+	if err := p.HandleRequestComplete(context.Background(), pluginapi.RequestCompletion{RequestID: "one", TraceID: "wrong"}); err != nil {
+		t.Fatal(err)
+	}
+	if p.resolveCorrelation(first.Headers) != identity {
+		t.Fatal("mismatched completion removed correlation")
+	}
+	if err := p.HandleRequestComplete(context.Background(), pluginapi.RequestCompletion{RequestID: "one", TraceID: "trace-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.resolveCorrelation(first.Headers); got != (correlationIdentity{}) {
+		t.Fatal("completed correlation retained")
+	}
+	if got := p.resolveCorrelation(second.Headers); got.TraceID != "trace-two" {
+		t.Fatalf("other correlation lost: %#v", got)
+	}
+	now = now.Add(attributionRetention)
+	if got := p.resolveCorrelation(second.Headers); got != (correlationIdentity{}) {
+		t.Fatal("expired correlation retained")
+	}
+	request.RequestedModel = "direct"
+	direct, err := p.InterceptRequestBeforeAuth(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.Headers.Get(correlationHeader) != "" || len(direct.ClearHeaders) != 1 || direct.ClearHeaders[0] != correlationHeader {
+		t.Fatalf("direct interception = %#v", direct)
+	}
+}
+
+func TestBeforeAuthCorrelationHeaderReplacement(t *testing.T) {
+	p := &modelRouterPlugin{config: routerConfig{Enabled: true, Routes: []modelRoute{{Alias: "auto"}}}, attribution: newAttributionTracker(nil)}
+	for _, model := range []string{"direct", "auto"} {
+		t.Run(model, func(t *testing.T) {
+			request := pluginapi.RequestInterceptRequest{RequestID: "request", TraceID: "trace", RequestedModel: model, Headers: http.Header{correlationHeader: {"spoof"}}}
+			response, err := p.InterceptRequestBeforeAuth(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// CPA's before-auth adapter applies clear/updates to a non-nil header map.
+			headers := request.Headers.Clone()
+			for _, key := range response.ClearHeaders {
+				headers.Del(key)
+			}
+			for key, values := range response.Headers {
+				headers[key] = append([]string(nil), values...)
+			}
+			if model == "direct" && len(headers) != 0 {
+				t.Fatalf("private header not removed: %#v", headers)
+			}
+			if model == "auto" && (headers.Get(correlationHeader) == "" || headers.Get(correlationHeader) == "spoof") {
+				t.Fatalf("spoof not replaced: %#v", headers)
+			}
+		})
 	}
 }

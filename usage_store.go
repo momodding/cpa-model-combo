@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	usageStorageSchemaVersion = 3
+	usageStorageSchemaVersion = 4
 	sqliteBusyTimeoutMS       = 5000
 )
 
@@ -52,6 +52,19 @@ type storedRequestSession struct {
 	Outcome            string        `json:"outcome,omitempty"`
 	HTTPStatus         int           `json:"http_status,omitempty"`
 	Latency            time.Duration `json:"latency_ns,omitempty"`
+}
+
+type storedRoutingSkip struct {
+	TraceID            string    `json:"trace_id"`
+	LifecycleRequestID string    `json:"lifecycle_request_id"`
+	Attempt            int       `json:"order"`
+	RequestedAt        time.Time `json:"requested_at"`
+	Model              string    `json:"model"`
+	CredentialID       string    `json:"credential_id,omitempty"`
+	CredentialLabel    string    `json:"credential_label,omitempty"`
+	RetryAt            time.Time `json:"retry_at"`
+	Status             string    `json:"status"`
+	Dispatched         bool      `json:"dispatched"`
 }
 
 type minuteAggregate struct {
@@ -301,7 +314,13 @@ func initializeSQLiteDatabase(database *sql.DB) error {
 			}
 		}
 	}
-	if version < 3 {
+	if _, err := transaction.Exec(`CREATE TABLE IF NOT EXISTS routing_skips (trace_id TEXT NOT NULL, lifecycle_request_id TEXT NOT NULL, attempt INTEGER NOT NULL, requested_at_ns INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY (trace_id, lifecycle_request_id, attempt))`); err != nil {
+		return fmt.Errorf("initialize routing skips: %w", err)
+	}
+	if _, err := transaction.Exec(`CREATE INDEX IF NOT EXISTS routing_skips_requested_at ON routing_skips(requested_at_ns)`); err != nil {
+		return fmt.Errorf("initialize routing skips index: %w", err)
+	}
+	if version < usageStorageSchemaVersion {
 		if _, err := transaction.Exec(`UPDATE store_state SET storage_schema_version = ? WHERE id = 1`, usageStorageSchemaVersion); err != nil {
 			return fmt.Errorf("migrate SQLite storage schema: %w", err)
 		}
@@ -374,6 +393,44 @@ func (store *usageStore) Record(record storedUsageRecord) error {
 	if err != nil {
 		store.recordError(err)
 		log.Printf("model-router: persist usage: %v", err)
+	} else {
+		store.clearError()
+	}
+	return err
+}
+
+func (store *usageStore) RecordRoutingSkip(skip storedRoutingSkip) error {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.db == nil {
+		return errors.New("usage database is closed")
+	}
+	err := func() error {
+		if skip.TraceID == "" || skip.LifecycleRequestID == "" || skip.Attempt < 0 || skip.RequestedAt.IsZero() {
+			return errors.New("routing skip requires both IDs, an attempt and requested_at")
+		}
+		skip.Status = "cooling_down"
+		skip.Dispatched = false
+		value, err := json.Marshal(skip)
+		if err != nil {
+			return err
+		}
+		transaction, err := store.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer transaction.Rollback()
+		if _, err := transaction.Exec(`INSERT INTO routing_skips(trace_id, lifecycle_request_id, attempt, requested_at_ns, payload) VALUES (?, ?, ?, ?, ?)`, skip.TraceID, skip.LifecycleRequestID, skip.Attempt, skip.RequestedAt.UTC().UnixNano(), value); err != nil {
+			return err
+		}
+		if err := pruneSQLiteTransaction(transaction, store.retentionDays, time.Now().UTC(), false); err != nil {
+			return err
+		}
+		return transaction.Commit()
+	}()
+	if err != nil {
+		store.recordError(err)
+		log.Printf("model-router: persist routing skip: %v", err)
 	} else {
 		store.clearError()
 	}
@@ -551,6 +608,9 @@ func pruneSQLiteTransaction(transaction *sql.Tx, retentionDays int, now time.Tim
 	if _, err := transaction.Exec(`DELETE FROM request_sessions WHERE started_at_ns < ?`, cutoff); err != nil {
 		return err
 	}
+	if _, err := transaction.Exec(`DELETE FROM routing_skips WHERE requested_at_ns < ?`, cutoff); err != nil {
+		return err
+	}
 	if _, err := transaction.Exec(`DELETE FROM minute_aggregates WHERE minute_ns < ?`, cutoff); err != nil {
 		return err
 	}
@@ -652,6 +712,26 @@ func scanRequestSessions(connection *sql.Conn, visit func(storedRequestSession))
 	return rows.Err()
 }
 
+func scanRoutingSkips(connection *sql.Conn, visit func(storedRoutingSkip)) error {
+	rows, err := connection.QueryContext(context.Background(), `SELECT payload FROM routing_skips ORDER BY requested_at_ns, trace_id, lifecycle_request_id, attempt`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value sql.RawBytes
+		if err := rows.Scan(&value); err != nil {
+			return err
+		}
+		var skip storedRoutingSkip
+		if err := json.Unmarshal(value, &skip); err != nil {
+			return fmt.Errorf("decode routing skip: %w", err)
+		}
+		visit(skip)
+	}
+	return rows.Err()
+}
+
 func (store *usageStore) ResetUsage() error {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
@@ -664,6 +744,9 @@ func (store *usageStore) ResetUsage() error {
 	}
 	if err == nil {
 		_, err = transaction.Exec(`DELETE FROM request_sessions`)
+	}
+	if err == nil {
+		_, err = transaction.Exec(`DELETE FROM routing_skips`)
 	}
 	if err == nil {
 		_, err = transaction.Exec(`DELETE FROM minute_aggregates`)

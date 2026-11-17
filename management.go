@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -142,11 +141,11 @@ func validateModelRouterManagementConfig(plugin *modelRouterPlugin, host modelHo
 			"message": "configuration exceeds the 1 MiB validation limit",
 		})
 	}
+	if field, message := allowedAccountsTypeError(body); field != "" {
+		return modelRouterFieldError(field, message)
+	}
 	var request modelRouterValidationRequest
 	if err := decodeManagementJSON(body, maxManagementRequestBytes, &request); err != nil {
-		if field, message := allowedAccountsTypeError(body); field != "" {
-			return modelRouterFieldError(field, message)
-		}
 		return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{
 			"valid":   false,
 			"error":   "invalid_request",
@@ -154,12 +153,15 @@ func validateModelRouterManagementConfig(plugin *modelRouterPlugin, host modelHo
 		})
 	}
 	// Validate saved routes even when routing is disabled.
-	wire := struct {
-		Enabled  bool                `yaml:"enabled"`
-		Routes   []modelRouteYAML    `yaml:"routes"`
-		Fallback *fallbackConfigYAML `yaml:"fallback,omitempty"`
-	}{Enabled: true, Routes: request.Routes, Fallback: request.Fallback}
-	raw, err := yaml.Marshal(wire)
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{"valid": false, "error": "invalid_request", "message": err.Error()})
+	}
+	if wire == nil {
+		wire = make(map[string]json.RawMessage)
+	}
+	wire["enabled"] = json.RawMessage("true")
+	raw, err := json.Marshal(wire)
 	if err != nil {
 		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{
 			"valid":   false,
@@ -183,57 +185,34 @@ func validateModelRouterManagementConfig(plugin *modelRouterPlugin, host modelHo
 	}
 	var credentials []accountCredential
 	for routeIndex, route := range config.Routes {
-		if len(route.AllowedAccounts) == 0 {
-			continue
-		}
-		if credentials == nil {
-			credentials, err = plugin.accountCatalog(host)
-			if err != nil {
-				return modelRouterCatalogUnavailable()
+		for targetIndex, target := range route.Targets {
+			if len(target.AllowedAccounts) == 0 {
+				continue
 			}
 			if credentials == nil {
-				credentials = []accountCredential{}
-			}
-		}
-		selected := make([]accountCredential, 0, len(route.AllowedAccounts))
-		for accountIndex, id := range route.AllowedAccounts {
-			field := fmt.Sprintf("routes[%d].allowed_accounts[%d]", routeIndex, accountIndex)
-			var found *accountCredential
-			for i := range credentials {
-				if credentials[i].ID == id {
-					found = &credentials[i]
-					break
+				credentials, err = plugin.accountCatalog(host)
+				if err != nil {
+					return modelRouterCatalogUnavailable()
+				}
+				if credentials == nil {
+					credentials = []accountCredential{}
 				}
 			}
-			if found == nil || found.Disabled {
-				return modelRouterFieldError(field, "account does not exist or is disabled")
-			}
-			supported := false
-			for _, target := range route.Targets {
-				if found.supportsModel(target.Model) {
-					supported = true
-					break
+			for accountIndex, id := range target.AllowedAccounts {
+				field := fmt.Sprintf("routes[%d].targets[%d].allowed_accounts[%d]", routeIndex, targetIndex, accountIndex)
+				var found *accountCredential
+				for i := range credentials {
+					if credentials[i].ID == id {
+						found = &credentials[i]
+						break
+					}
 				}
-			}
-			if !supported {
-				return modelRouterFieldError(field, "account does not support any route target")
-			}
-			selected = append(selected, *found)
-		}
-		for targetIndex, target := range route.Targets {
-			supported := false
-			for _, credential := range selected {
-				if credential.supportsModel(target.Model) {
-					supported = true
-					break
+				if found == nil || found.Disabled {
+					return modelRouterFieldError(field, "account does not exist or is disabled")
 				}
-			}
-			if !supported {
-				field := "targets"
-				if request.Routes[routeIndex].Models != nil {
-					field = "models"
+				if !found.supportsModel(target.Model) {
+					return modelRouterFieldError(field, "account does not support target")
 				}
-				return modelRouterFieldError(fmt.Sprintf("routes[%d].%s[%d]", routeIndex, field, targetIndex), "target is not offered by any selected account")
 			}
 		}
 	}
@@ -273,23 +252,39 @@ func allowedAccountsTypeError(body []byte) (string, string) {
 	var wire struct {
 		Routes []struct {
 			AllowedAccounts json.RawMessage `json:"allowed_accounts"`
+			Targets         []struct {
+				AllowedAccounts json.RawMessage `json:"allowed_accounts"`
+			} `json:"targets"`
 		} `json:"routes"`
 	}
 	if json.Unmarshal(body, &wire) != nil {
 		return "", ""
 	}
-	for routeIndex, route := range wire.Routes {
-		field := fmt.Sprintf("routes[%d].allowed_accounts", routeIndex)
-		var items []json.RawMessage
-		if len(route.AllowedAccounts) == 0 || string(route.AllowedAccounts) == "null" {
-			continue
+	check := func(field string, raw json.RawMessage) (string, string) {
+		if len(raw) == 0 {
+			return "", ""
 		}
-		if json.Unmarshal(route.AllowedAccounts, &items) != nil {
+		if string(raw) == "null" {
+			return field, "allowed_accounts must be an array of strings"
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
 			return field, "allowed_accounts must be an array of strings"
 		}
 		for itemIndex, item := range items {
-			if len(item) > 0 && item[0] != '"' && string(item) != "null" {
+			if len(item) == 0 || item[0] != '"' {
 				return fmt.Sprintf("%s[%d]", field, itemIndex), "account ID must be a string"
+			}
+		}
+		return "", ""
+	}
+	for routeIndex, route := range wire.Routes {
+		if field, message := check(fmt.Sprintf("routes[%d].allowed_accounts", routeIndex), route.AllowedAccounts); field != "" {
+			return field, message
+		}
+		for targetIndex, target := range route.Targets {
+			if field, message := check(fmt.Sprintf("routes[%d].targets[%d].allowed_accounts", routeIndex, targetIndex), target.AllowedAccounts); field != "" {
+				return field, message
 			}
 		}
 	}

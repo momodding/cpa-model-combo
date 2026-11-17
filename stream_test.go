@@ -12,6 +12,51 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+func TestStreamRestrictedCooldownKeepsSiblingAvailable(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
+	route.Targets[0].AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		if request.Headers.Get(correlationHeader) != "" {
+			t.Fatal("internal correlation header leaked to host")
+		}
+		if request.AuthID == "a" {
+			return pluginapi.HostModelStreamResponse{StatusCode: 429}, nil
+		}
+		host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"ok": {{Done: true}}}
+		return pluginapi.HostModelStreamResponse{StreamID: "ok", StatusCode: 200}, nil
+	}
+	request := pluginapi.ExecutorRequest{Model: "smart", Headers: http.Header{correlationHeader: {"spoof"}}}
+	for range 2 {
+		if err := plugin.executeStreamWithHost(t.Context(), request, "stream", host, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(host.startCalls) != 3 || host.startCalls[0].AuthID != "a" || host.startCalls[1].AuthID != "b" || host.startCalls[2].AuthID != "b" {
+		t.Fatalf("calls = %#v", host.startCalls)
+	}
+}
+
+func TestStreamCoolingSkipDoesNotConsumeAttemptLimit(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	plugin := testRouterPlugin(route)
+	plugin.config.MaxAttempts = 1
+	plugin.runtime.MarkFailure(route, "model-a")
+	host := &fakeModelHost{
+		start: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+			return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "ok"}, nil
+		},
+		reads: map[string][]pluginapi.HostModelStreamReadResponse{"ok": {{Done: true}}},
+	}
+	if err := plugin.executeStreamWithHost(t.Context(), pluginapi.ExecutorRequest{Model: "smart"}, "stream", host, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.startCalls) != 1 || host.startCalls[0].Model != "model-b" {
+		t.Fatalf("calls = %#v", host.startCalls)
+	}
+}
+
 func TestExecuteStreamAvailabilityFailures(t *testing.T) {
 	for _, status := range []int{400, 401, 402, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -375,7 +420,9 @@ func TestExecuteStreamAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 
 func TestRestrictedStreamAccountFailoverAndCommit(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b"}
+	}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{
@@ -409,14 +456,14 @@ func TestRestrictedStreamAccountFailoverAndCommit(t *testing.T) {
 
 func TestRestrictedStreamUnavailableAndCancellation(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
-	route.AllowedAccounts = []string{"missing"}
+	route.Targets[0].AllowedAccounts = []string{"missing"}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil)
 	if codeFromError(err, "") != "model_route_unavailable" || len(host.startCalls) != 0 {
 		t.Fatalf("error = %v, calls = %#v", err, host.startCalls)
 	}
-	route.AllowedAccounts = []string{"a", "b"}
+	route.Targets[0].AllowedAccounts = []string{"a", "b"}
 	plugin = testRouterPlugin(route)
 	ctx, cancel := context.WithCancel(context.Background())
 	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
@@ -431,7 +478,7 @@ func TestRestrictedStreamUnavailableAndCancellation(t *testing.T) {
 
 func TestRestrictedStreamPayloadFailureOnLastAccountDoesNotCool(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
-	route.AllowedAccounts = []string{"a"}
+	route.Targets[0].AllowedAccounts = []string{"a"}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
@@ -444,15 +491,41 @@ func TestRestrictedStreamPayloadFailureOnLastAccountDoesNotCool(t *testing.T) {
 	if statusFromError(err) != 429 || len(host.startCalls) != 1 {
 		t.Fatalf("error = %v, calls = %#v", err, host.startCalls)
 	}
+	if _, successes, failures := routeObservationSummary(t, plugin.runtime, route, "model-a"); successes != 0 || failures != 1 {
+		t.Fatalf("observations after committed failure: successes = %d, failures = %d", successes, failures)
+	}
 	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"a": {{Payload: []byte("data: {}\n\n"), Done: true}}}
 	if err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil); err != nil || len(host.startCalls) != 2 {
 		t.Fatalf("error = %v, calls = %#v; route cooled after committed payload", err, host.startCalls)
 	}
 }
 
+func TestStreamTargetAccountIsolationAndUnknownSupport(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.Targets[0].AllowedAccounts = []string{"a"}
+	route.Targets[1].AllowedAccounts = []string{"b"}
+	host := routingTestHost()
+	host.models[0].Models = nil
+	host.reads = map[string][]pluginapi.HostModelStreamReadResponse{"b": {{Done: true}}}
+	host.start = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		if request.Model == "model-a" {
+			return pluginapi.HostModelStreamResponse{StatusCode: 429}, nil
+		}
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "b"}, nil
+	}
+	if err := testRouterPlugin(route).executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "smart"}, "plugin", host, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.startCalls) != 2 || host.startCalls[0].AuthID != "a" || host.startCalls[1].AuthID != "b" {
+		t.Fatalf("calls = %#v", host.startCalls)
+	}
+}
+
 func TestRestrictedStreamRespectsTargetAttemptLimit(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b"}
+	}
 	plugin := testRouterPlugin(route)
 	plugin.config.MaxAttempts = 1
 	host := routingTestHost()

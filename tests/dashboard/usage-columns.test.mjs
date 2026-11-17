@@ -39,3 +39,37 @@ test('last visible column cannot be hidden by a change event', () => {
   changeColumnVisibility({ target: input });
   assert.equal(usageState.hiddenRequestColumns.has('result'), false);
 });
+
+test('cooling skips show safe routing details without execution accounting', () => {
+  function element() {
+    return {
+      children: [], className: '', textContent: '',
+      appendChild(child) { this.children.push(child); },
+      append(child) { this.children.push(child); },
+      prepend(child) { this.children.unshift(child); },
+      get firstElementChild() { return this.children[0]; },
+    };
+  }
+  const context = {
+    document: { createElement: element },
+    formatRequestTime: value => `time:${value}`,
+    resultDisplay: value => value,
+    usageState: { expandedRequests: new Set() },
+  };
+  const { requestRow, requestValue } = vm.runInNewContext(`${tables}\n({ requestRow, requestValue })`, context);
+  const skip = { dispatched: false, status: 'cooling_down', order: 3, retry_at: 'later', provider_model: 'model', auth_id: 'secret', request_id: 'fake', total_tokens: 42, latency_ns: 123, estimated_cost: { priced: true, total_usd: 5 } };
+  const columns = ['request_id', 'provider_model', 'credential', 'result', 'total_tokens', 'latency', 'cost'].map(key => ({ key }));
+  const row = element();
+  requestRow(row, skip, columns, { ordinal: 1, parent: { trace_id: 'trace' } });
+  assert.equal(row.children[0].textContent, '—');
+  assert.equal(row.children[0].children[0].textContent, 'Skipped 3');
+  assert.equal(row.children[0].children[1].textContent, 'Retry at time:later');
+  assert.equal(row.children[1].textContent, 'model');
+  assert.equal(row.children[2].textContent, 'Unavailable');
+  assert.equal(row.children[3].children[0].textContent, 'Cooling down');
+  assert.equal(row.children[3].children[0].className, 'status-pill');
+  assert.deepEqual(row.children.slice(4).map(cell => cell.textContent), ['—', '—', '—']);
+  assert.equal(requestValue({ attempts: [skip] }, 'provider_model', false), 'No executions recorded');
+  skip.credential_label = 'Safe label';
+  assert.equal(requestValue(skip, 'credential', true), 'Safe label');
+});

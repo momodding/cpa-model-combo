@@ -38,6 +38,14 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
+	accounts, unavailable, skips, retryAfter, allCooling := p.runtime.Preflight(route, accounts, unavailable)
+	identity := p.resolveCorrelation(request.Headers)
+	for _, skip := range skips {
+		p.recordRoutingSkip(identity, skip)
+	}
+	if allCooling {
+		return pluginapi.ExecutorResponse{}, cooldownRouteError(route, retryAfter)
+	}
 	var lastErr error
 	var lastTarget string
 	lastStatus := 0
@@ -57,11 +65,12 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
 		candidates := accounts[routeKey(selection.model)]
-		if len(route.AllowedAccounts) == 0 {
-			candidates = []accountCredential{{}}
-		}
 		for _, account := range candidates {
-			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
+			ordinal := p.nextCorrelationAttempt(identity)
+			if ordinal < 0 {
+				ordinal = attempt
+			}
+			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
 			response, err := host.Execute(hostRequest(request, bodyInfo, target, false, account))
 			status := response.StatusCode
 			if status == 0 && err == nil {
@@ -71,7 +80,11 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 				status = statusFromError(err)
 			}
 			if err == nil && status >= 200 && status < 300 {
-				p.runtime.MarkSuccess(route, selection.model)
+				if account.ID == "" {
+					p.runtime.MarkSuccess(route, selection.model)
+				} else {
+					p.runtime.MarkAccountSuccess(route, selection.model, account.ID)
+				}
 				metadata := map[string]any{
 					"route_alias":    route.Alias,
 					"selected_model": target,
@@ -108,8 +121,13 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			lastErr = err
 			lastTarget = target
 			lastStatus = status
+			if account.ID != "" {
+				p.runtime.MarkAccountFailure(route, selection.model, account.ID)
+			}
 		}
-		p.runtime.MarkFailure(route, selection.model)
+		if len(candidates) > 0 && candidates[0].ID == "" {
+			p.runtime.MarkFailure(route, selection.model)
+		}
 	}
 	detail := ""
 	if lastErr != nil {
@@ -120,12 +138,13 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 
 // routeAccounts snapshots the eligible accounts once and excludes targets with no compatible account.
 func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel string, host modelHost) (map[string][]accountCredential, map[string]struct{}, error) {
-	if len(route.AllowedAccounts) == 0 {
-		return nil, nil, nil
-	}
-	catalog, err := p.accountCatalog(host)
-	if err != nil {
-		return nil, nil, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), "credential catalog unavailable")
+	var catalog []accountCredential
+	var catalogErr error
+	for _, target := range route.Targets {
+		if len(target.AllowedAccounts) > 0 {
+			catalog, catalogErr = p.accountCatalog(host)
+			break
+		}
 	}
 	byID := make(map[string]accountCredential, len(catalog))
 	for _, account := range catalog {
@@ -137,7 +156,15 @@ func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel strin
 	unavailable := make(map[string]struct{})
 	for _, target := range route.Targets {
 		key := routeKey(target.Model)
-		for _, id := range route.AllowedAccounts {
+		if len(target.AllowedAccounts) == 0 {
+			eligible[key] = []accountCredential{{}}
+			continue
+		}
+		if catalogErr != nil {
+			unavailable[key] = struct{}{}
+			continue
+		}
+		for _, id := range target.AllowedAccounts {
 			if account, ok := byID[id]; ok && account.supportsModel(targetModel(requestedModel, target.Model)) {
 				eligible[key] = append(eligible[key], account)
 			}
@@ -170,13 +197,19 @@ func safeRestrictedFailure(err error) error {
 }
 
 func hostRequest(request pluginapi.ExecutorRequest, bodyInfo executionBody, model string, stream bool, account accountCredential) pluginapi.HostModelExecutionRequest {
+	headers := sanitizeNestedHeaders(request.Headers)
+	for key := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), correlationHeader) {
+			delete(headers, key)
+		}
+	}
 	return pluginapi.HostModelExecutionRequest{
 		EntryProtocol:  bodyInfo.entryProtocol,
 		ExitProtocol:   bodyInfo.responseProtocol,
 		Model:          model,
 		Stream:         stream,
 		Body:           requestBodyForTarget(bodyInfo.body, model),
-		Headers:        sanitizeNestedHeaders(request.Headers),
+		Headers:        headers,
 		Query:          cloneValues(request.Query),
 		Alt:            request.Alt,
 		AuthID:         account.ID,

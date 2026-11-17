@@ -301,7 +301,7 @@ func TestUsageStoreMigratesSchemaV1ToV3(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT storage_schema_version, next_sequence, prices_json, preferences_json FROM store_state WHERE id = 1`).Scan(&version, &sequence, &prices, &preferences); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
+	if version != 4 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
 		t.Fatalf("migrated state = %d/%d/%s/%s", version, sequence, prices, preferences)
 	}
 	var stored []byte
@@ -415,7 +415,7 @@ func TestUsageStoreMigratesReleasedSchemaV2(t *testing.T) {
 			check := func(store *usageStore) {
 				t.Helper()
 				var version int
-				if err := store.db.QueryRow(`SELECT storage_schema_version FROM store_state WHERE id = 1`).Scan(&version); err != nil || version != 3 {
+				if err := store.db.QueryRow(`SELECT storage_schema_version FROM store_state WHERE id = 1`).Scan(&version); err != nil || version != 4 {
 					t.Fatalf("migrated version = %d, %v", version, err)
 				}
 				var traceID, lifecycleID string

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -64,6 +65,22 @@ func TestAccountCatalogJoinsSafeFieldsAndExcludesRouterAliases(t *testing.T) {
 	}
 }
 
+func TestAccountCatalogUnknownSupportBeforeFiltering(t *testing.T) {
+	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "gpt-5"))
+	plugin.credentials = &credentialSnapshots{}
+	host := &fakeCatalogHost{models: []pluginapi.HostAuthModels{
+		{ID: "unknown", Provider: "codex"},
+		{ID: "filtered", Provider: "codex", Models: []string{"smart", " "}},
+	}}
+	catalog, err := plugin.accountCatalog(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 2 || catalog[0].ModelSupportUnknown || catalog[0].supportsModel("gpt-5") || !catalog[1].ModelSupportUnknown || !catalog[1].supportsModel("gpt-5(high)") {
+		t.Fatalf("catalog = %#v", catalog)
+	}
+}
+
 func TestAccountCatalogFailsClosed(t *testing.T) {
 	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "gpt-5"))
 	for name, host := range map[string]modelHost{
@@ -78,5 +95,21 @@ func TestAccountCatalogFailsClosed(t *testing.T) {
 		if strings.Contains(err.Error(), "sk-") {
 			t.Fatalf("%s: leaked detail: %v", name, err)
 		}
+	}
+}
+
+func TestAccountCatalogAvailability(t *testing.T) {
+	next := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	host := &fakeCatalogHost{
+		models: []pluginapi.HostAuthModels{{ID: "unknown"}},
+		files:  []pluginapi.HostAuthFileEntry{{ID: "unknown", Unavailable: true, NextRetryAfter: next, StatusMessage: "secret"}},
+	}
+	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "a"))
+	catalog, err := plugin.accountCatalog(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || !catalog[0].Unavailable || !catalog[0].NextRetryAfter.Equal(next) {
+		t.Fatalf("catalog = %#v", catalog)
 	}
 }

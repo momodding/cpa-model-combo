@@ -315,19 +315,19 @@ function effectiveCacheReadValue(value){
 function renderUsageSummary(){
   const overview=usageState.overview;
   if(!overview)return;
-  const summary=overview.summary||{};
-  const costs=overview.costs||{};
-  setMetric('metric-tokens',formatCompact(summary.total_tokens),'metric-token-detail',formatNumber(summary.input_tokens)+' input · '+formatNumber(summary.output_tokens)+' output · '+formatNumber(effectiveCacheReadValue(summary))+' cache');
-  setMetric('metric-cost',formatUSD(costs.total_usd),'metric-cost-detail',formatNumber(costs.priced_requests)+' of '+formatNumber(costs.requests)+' requests priced');
-  const success=Math.max(0,Number(summary.requests||0)-Number(summary.failed_requests||0));
-  const rate=Number(summary.requests||0)?success/Number(summary.requests)*100:0;
-  setMetric('metric-requests',formatNumber(summary.requests),'metric-request-detail',rate.toFixed(1)+'% success · '+formatNumber(summary.failed_requests)+' failed');
-  const routers=(overview.router_models||[]).filter(item=>item.attribution==='routed'&&item.model).sort((left,right)=>Number(right.requests||0)-Number(left.requests||0));
-  const providers=(overview.provider_models||[]).slice().sort((left,right)=>Number(right.requests||0)-Number(left.requests||0));
-  const router=routers[0];
-  const provider=providers[0];
-  setMetric('metric-router',router?router.model:'—','metric-router-detail',router?'Routed alias · '+formatNumber(router.requests)+' requests':'No routed requests in range');
-  setMetric('metric-provider',provider&&provider.model?provider.model:'—','metric-provider-detail',provider?formatNumber(provider.requests)+' requests · '+formatCompact(provider.total_tokens)+' tokens':'No requests in range');
+  const summary=overview.summary;
+  const costs=overview.costs;
+  setMetric('metric-tokens',summary?formatCompact(summary.total_tokens):'—','metric-token-detail',summary?formatNumber(summary.input_tokens)+' input · '+formatNumber(summary.output_tokens)+' output · '+formatNumber(effectiveCacheReadValue(summary))+' cache':'Unavailable');
+  setMetric('metric-cost',costs?formatUSD(costs.total_usd):'—','metric-cost-detail',costs?formatNumber(costs.priced_requests)+' of '+formatNumber(costs.requests)+' requests priced':'Unavailable');
+  const success=summary?Math.max(0,Number(summary.requests||0)-Number(summary.failed_requests||0)):0;
+  const rate=summary&&Number(summary.requests||0)?success/Number(summary.requests)*100:0;
+  setMetric('metric-requests',summary?formatNumber(summary.requests):'—','metric-request-detail',summary?rate.toFixed(1)+'% success · '+formatNumber(summary.failed_requests)+' failed':'Unavailable');
+  const routers=Array.isArray(overview.router_models)?overview.router_models.filter(item=>item.attribution==='routed'&&item.model).sort((left,right)=>Number(right.requests||0)-Number(left.requests||0)):null;
+  const providers=Array.isArray(overview.provider_models)?overview.provider_models.filter(item=>item.model).sort((left,right)=>Number(right.requests||0)-Number(left.requests||0)):null;
+  const router=routers&&routers[0];
+  const provider=providers&&providers[0];
+  setMetric('metric-router',router?router.model:routers?'None':'—','metric-router-detail',router?'Routed alias · '+formatNumber(router.requests)+' requests':routers?'No routed requests in range':'Unavailable');
+  setMetric('metric-provider',provider?provider.model:providers?'None':'—','metric-provider-detail',provider?formatNumber(provider.requests)+' requests · '+formatCompact(provider.total_tokens)+' tokens':providers?'No requests in range':'Unavailable');
 }
 function mergeSelectOptions(select,values,allLabel,selectedValue){
   const merged=new Map();

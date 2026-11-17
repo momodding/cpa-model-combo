@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -24,12 +25,15 @@ type authCatalogHost interface {
 // accountCredential is the safe browser/runtime view of one credential; it never carries tokens,
 // paths, metadata or the complete SDK auth object.
 type accountCredential struct {
-	ID        string         `json:"id"`
-	AuthIndex string         `json:"auth_index"`
-	Provider  string         `json:"provider"`
-	Label     string         `json:"label"`
-	Disabled  bool           `json:"disabled"`
-	Models    []accountModel `json:"models"`
+	ID                  string         `json:"id"`
+	AuthIndex           string         `json:"auth_index"`
+	Provider            string         `json:"provider"`
+	Label               string         `json:"label"`
+	Disabled            bool           `json:"disabled"`
+	Unavailable         bool           `json:"unavailable"`
+	NextRetryAfter      time.Time      `json:"next_retry_after,omitempty"`
+	ModelSupportUnknown bool           `json:"model_support_unknown"`
+	Models              []accountModel `json:"models"`
 }
 
 // accountModel is registry membership only. Entitlement stays unknown because stock sources
@@ -48,11 +52,11 @@ func (p *modelRouterPlugin) accountCatalog(host modelHost) ([]accountCredential,
 	}
 	registered, err := source.AuthModels()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errAccountCatalogUnavailable, err)
+		return nil, fmt.Errorf("%w: models callback failed", errAccountCatalogUnavailable)
 	}
 	entries, err := source.AuthList()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errAccountCatalogUnavailable, err)
+		return nil, fmt.Errorf("%w: list callback failed", errAccountCatalogUnavailable)
 	}
 	if p != nil {
 		p.credentials.replace(entries)
@@ -78,12 +82,15 @@ func (p *modelRouterPlugin) accountCatalog(host modelHost) ([]accountCredential,
 		seen[id] = struct{}{}
 		entry := byID[id]
 		credential := accountCredential{
-			ID:        id,
-			AuthIndex: strings.TrimSpace(item.AuthIndex),
-			Provider:  provider,
-			Label:     safeCredentialLabel(entry.Label, entry.Email),
-			Disabled:  entry.Disabled,
-			Models:    make([]accountModel, 0, len(item.Models)),
+			ID:                  id,
+			AuthIndex:           strings.TrimSpace(item.AuthIndex),
+			Provider:            provider,
+			Label:               safeCredentialLabel(entry.Label, entry.Email),
+			Disabled:            entry.Disabled,
+			Unavailable:         entry.Unavailable,
+			NextRetryAfter:      entry.NextRetryAfter,
+			ModelSupportUnknown: len(item.Models) == 0,
+			Models:              make([]accountModel, 0, len(item.Models)),
 		}
 		modelSeen := make(map[string]struct{}, len(item.Models))
 		for _, model := range item.Models {
@@ -105,6 +112,9 @@ func (p *modelRouterPlugin) accountCatalog(host modelHost) ([]accountCredential,
 
 // supportsModel compares registry IDs exactly, accepting the target with its thinking suffix removed.
 func (c accountCredential) supportsModel(target string) bool {
+	if c.ModelSupportUnknown {
+		return true
+	}
 	base, _, _ := splitThinkingSuffix(strings.TrimSpace(target))
 	for _, model := range c.Models {
 		if model.ID == target || model.ID == base {

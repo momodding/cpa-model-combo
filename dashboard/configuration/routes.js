@@ -15,16 +15,17 @@ function normalizeRoute(value,index){
   const canonicalCooldown=Number.isInteger(route.cooldown_seconds)?route.cooldown_seconds:null;
   const legacyCooldown=Number.isInteger(route['cooldown-seconds'])?route['cooldown-seconds']:null;
   const cooldown=canonicalCooldown!==null?canonicalCooldown:(legacyCooldown!==null?legacyCooldown:60);
+  const legacy=Object.prototype.hasOwnProperty.call(route,'allowed_accounts')?route.allowed_accounts:[];
+  const copyAccounts=accounts=>Array.isArray(accounts)?accounts.slice():accounts;
   const targets=Array.isArray(route.targets)?route.targets.map(target=>{
     const value=target&&typeof target==='object'?target:{};
-    return{model:String(value.model||''),weight:String(Number.isInteger(value.weight)?value.weight:1)};
-  }):(Array.isArray(route.models)?route.models.map(model=>({model:String(model||''),weight:'1'})):[]);
+    return{model:String(value.model||''),weight:String(Number.isInteger(value.weight)?value.weight:1),allowed_accounts:copyAccounts(Object.prototype.hasOwnProperty.call(value,'allowed_accounts')?value.allowed_accounts:legacy)};
+  }):(Array.isArray(route.models)?route.models.map(model=>({model:String(model||''),weight:'1',allowed_accounts:copyAccounts(legacy)})):[]);
   const strategy=STRATEGIES.includes(route.strategy)?route.strategy:'priority';
   const normalized={
     alias:String(route.alias||('route-'+(index+1))),
     strategy,
     cooldown_seconds:String(cooldown),
-    allowed_accounts:Array.isArray(route.allowed_accounts)?route.allowed_accounts.slice():[],
     targets
   };
   if(strategy==='last_known_good'){
@@ -40,9 +41,12 @@ function serializeRoutes(routes){
       alias:route.alias.trim(),
       strategy:route.strategy,
       cooldown_seconds:integerDraftValue(route.cooldown_seconds),
-      targets:route.targets.map(target=>({model:target.model.trim(),weight:integerDraftValue(target.weight)}))
+      targets:route.targets.map(target=>{
+        const item={model:target.model.trim(),weight:integerDraftValue(target.weight)};
+        if(!Array.isArray(target.allowed_accounts)||target.allowed_accounts.length)item.allowed_accounts=Array.isArray(target.allowed_accounts)?target.allowed_accounts.map(id=>typeof id==='string'?id.trim():id):target.allowed_accounts;
+        return item;
+      })
     };
-    if(Array.isArray(route.allowed_accounts)&&route.allowed_accounts.length)serialized.allowed_accounts=route.allowed_accounts.slice();
     const lkg=route.strategy==='last_known_good';
     if(lkg||route.success_rate_threshold!==undefined)serialized.success_rate_threshold=Number(String(route.success_rate_threshold??DEFAULT_LKG.success_rate_threshold).trim());
     if(lkg||route.minimum_samples!==undefined)serialized.minimum_samples=integerDraftValue(route.minimum_samples??DEFAULT_LKG.minimum_samples);
@@ -80,6 +84,19 @@ function validateRoutes(routes){
       else if(!Number.isInteger(target.weight)||target.weight<1||target.weight>1000000)errors.push(label+', target '+(targetIndex+1)+': weight must be an integer from 1 to 1000000.');
       else if(models.has(modelKey))errors.push(label+', target '+(targetIndex+1)+': model duplicates target '+models.get(modelKey)+'.');
       else models.set(modelKey,targetIndex+1);
+      if(target.allowed_accounts!==undefined){
+        const path='routes['+index+'].targets['+targetIndex+'].allowed_accounts';
+        if(!Array.isArray(target.allowed_accounts))errors.push(path+': must be an array of account IDs.');
+        else{
+          const seen=new Set();
+          target.allowed_accounts.forEach((id,accountIndex)=>{
+            const field=path+'['+accountIndex+']';
+            if(typeof id!=='string'||!id.trim())errors.push(field+': account ID must be a non-empty string.');
+            else if(seen.has(id.trim()))errors.push(field+': duplicate account ID.');
+            else seen.add(id.trim());
+          });
+        }
+      }
     });
   });
   routes.forEach((route,index)=>route.targets.forEach((target,targetIndex)=>{

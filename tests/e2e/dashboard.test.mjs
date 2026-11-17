@@ -339,14 +339,15 @@ test('account restrictions filter targets and reject stale selections', { timeou
   try {
     await page.route('**/v0/management/plugins/model-combo/accounts', route => route.fulfill({ json: { credentials: [
       { id: 'account-a', provider: 'Provider A', label: 'First', models: [{ id: 'model-a', entitlement: 'unknown' }] },
-      { id: 'account-b', provider: 'Provider B', label: 'Second', models: [{ id: 'model-b', entitlement: 'unknown' }] },
+      { id: 'account-b', provider: 'Provider B', label: 'Second', models: [], model_support_unknown: true },
+      { id: 'account-c', provider: 'Provider C', label: 'Third', models: [{ id: 'model-b' }] },
     ] } }));
     await page.route('**/v0/management/plugins/model-combo/config', route => {
       if (route.request().method() === 'PATCH') {
         saved = route.request().postDataJSON();
         return route.fulfill({ json: {} });
       }
-      return route.fulfill({ json: { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, allowed_accounts: ['missing'], targets: [{ model: 'model-a', weight: 1 }] }] } });
+      return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, allowed_accounts: ['missing'], targets: [{ model: 'model-a', weight: 1 }] }] } });
     });
     await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
     page.on('request', request => requests.push(new URL(request.url()).pathname));
@@ -357,25 +358,43 @@ test('account restrictions filter targets and reject stale selections', { timeou
     }
     await page.locator('#model-status[data-tone="ready"]').waitFor();
     const card = page.locator('.route-card').first();
-    assert.match(await card.locator('fieldset').textContent(), /Only the selected accounts are used/i);
-    await card.locator('[data-account-id="account-a"]').check();
+    let row = card.locator('.target-row').first();
+    const toggle = row.locator('[data-action="toggle-accounts"]');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(await row.locator('.target-accounts').isHidden(), true);
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    assert.match(await row.locator('.target-accounts').textContent(), /missing.*unavailable/);
+    await row.locator('[data-account-id="account-b"]').check();
     await page.locator('#save').click();
     assert.equal(saved, undefined, 'stale accounts must prevent saving');
-    await card.locator('[data-account-id="missing"]').uncheck();
-    assert.match(await card.locator('fieldset').textContent(), /No accounts selected|Only the selected accounts/i);
-    const options = card.locator('select[data-target-field="model"] option');
-    assert.match(await options.filter({ hasText: 'model-a' }).textContent(), /entitlement unknown/);
-    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 0);
-    await card.locator('[data-account-id="account-b"]').check();
-    assert.equal(await options.filter({ hasText: 'model-b' }).count(), 1);
-    assert.match(await card.locator('[data-account-id="account-b"]').locator('..').textContent(), /model-b \(unknown\)/);
-    await page.locator('#save').click();
-    assert.equal(saved, undefined, 'an account supporting no target must prevent saving');
+    await row.locator('[data-account-id="missing"]').uncheck();
+    await row.locator('[data-account-id="account-a"]').check();
+    assert.match(await row.locator('[data-account-id="account-b"]').locator('..').textContent(), /support unknown/);
+    assert.match(await row.locator('option[value="model-a"]').textContent(), /First/);
+    assert.match(await row.locator('option[value="model-b"]').textContent(), /support unknown/);
     await card.locator('button[data-action="add-target"]').click();
-    await card.locator('.target-row').nth(1).locator('select[data-target-field="model"]').selectOption('model-b');
+    row = card.locator('.target-row').nth(1);
+    await row.locator('select[data-target-field="model"]').selectOption('model-b');
+    await row.locator('[data-action="toggle-accounts"]').click();
+    await row.locator('[data-account-id="account-c"]').check();
+    await row.locator('[data-target-drag]').dragTo(card.locator('.target-row').first());
+    assert.deepEqual(await card.locator('select[data-target-field="model"]').evaluateAll(nodes => nodes.map(node => node.value)), ['model-b', 'model-a']);
+    await card.locator('.target-row').first().locator('[data-action="target-down"]').focus();
+    await page.keyboard.press('Enter');
+    assert.deepEqual(await card.locator('select[data-target-field="model"]').evaluateAll(nodes => nodes.map(node => node.value)), ['model-a', 'model-b']);
     await page.locator('#save').click();
     await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
-    assert.deepEqual(saved.routes[0].allowed_accounts, ['account-a', 'account-b']);
+    assert.equal('allowed_accounts' in saved.routes[0], false);
+    assert.deepEqual(saved.routes[0].targets.map(target => target.allowed_accounts), [['account-b', 'account-a'], ['account-c']]);
+    const reloadResponse = page.waitForResponse(response => response.url().includes('/v0/management/plugins/model-combo/config') && response.request().method() === 'GET');
+    await page.locator('#reload').click();
+    await reloadResponse;
+    await page.locator('#model-status[data-tone="ready"]').waitFor();
+    assert.deepEqual(await card.locator('select[data-target-field="model"]').evaluateAll(nodes => nodes.map(node => node.value)), ['model-a', 'model-b']);
+    await card.locator('.target-row').first().locator('[data-action="toggle-accounts"]').click();
+    assert.equal(await card.locator('.target-row').first().locator('[data-account-id="account-b"]').isChecked(), true);
+    assert.equal(await card.locator('.target-row').first().locator('[data-account-id="account-a"]').isChecked(), true);
     assert.ok(!requests.includes('/v1/models') && !requests.includes('/v0/management/api-keys'));
   } finally {
     await browser.close();

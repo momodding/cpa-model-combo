@@ -89,6 +89,10 @@ type usageRequestDetail struct {
 	CorrelationWarning       string               `json:"correlation_warning,omitempty"`
 	LifecycleRequestID       string               `json:"lifecycle_request_id,omitempty"`
 	Outcome                  string               `json:"outcome,omitempty"`
+	Status                   string               `json:"status,omitempty"`
+	Dispatched               *bool                `json:"dispatched,omitempty"`
+	RetryAt                  *time.Time           `json:"retry_at,omitempty"`
+	Order                    int                  `json:"order,omitempty"`
 	Result                   string               `json:"result"`
 	GenerationNS             uint64               `json:"generation_ns"`
 	TPS                      float64              `json:"tps"`

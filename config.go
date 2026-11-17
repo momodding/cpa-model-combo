@@ -38,8 +38,9 @@ var defaultFallbackOnStatus = []int{
 }
 
 type modelTarget struct {
-	Model  string
-	Weight int
+	Model           string
+	Weight          int
+	AllowedAccounts []string
 }
 
 type lastKnownGoodPolicy struct {
@@ -54,12 +55,12 @@ type modelRoute struct {
 	CooldownSeconds int
 	LastKnownGood   lastKnownGoodPolicy
 	Targets         []modelTarget
-	AllowedAccounts []string
 }
 
 type modelTargetYAML struct {
-	Model  string `yaml:"model" json:"model"`
-	Weight *int   `yaml:"weight,omitempty" json:"weight,omitempty"`
+	Model           string        `yaml:"model" json:"model"`
+	Weight          *int          `yaml:"weight,omitempty" json:"weight,omitempty"`
+	AllowedAccounts accountIDList `yaml:"allowed_accounts,omitempty" json:"allowed_accounts,omitempty"`
 }
 
 type modelRouteYAML struct {
@@ -81,6 +82,7 @@ func (ids *accountIDList) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.SequenceNode {
 		return fmt.Errorf("allowed_accounts must be an array of strings")
 	}
+	*ids = make(accountIDList, 0, len(node.Content))
 	for index, item := range node.Content {
 		if item.Kind != yaml.ScalarNode || item.ShortTag() != "!!str" {
 			return fmt.Errorf("allowed_accounts[%d] must be a string", index)
@@ -165,11 +167,32 @@ func containsUnsupportedAccountAwareSchema(node *yaml.Node) bool {
 	return false
 }
 
+func rejectNullAccountLists(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			if node.Content[index].Value == "allowed_accounts" && node.Content[index+1].ShortTag() == "!!null" {
+				return errors.New("allowed_accounts must be an array of strings")
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if err := rejectNullAccountLists(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	if len(bytes.TrimSpace(raw)) > 0 {
 		var document yaml.Node
-		if yaml.Unmarshal(raw, &document) == nil && containsUnsupportedAccountAwareSchema(&document) {
-			return routerConfig{}, errors.New(unsupportedAccountAwareSchemaError)
+		if yaml.Unmarshal(raw, &document) == nil {
+			if containsUnsupportedAccountAwareSchema(&document) {
+				return routerConfig{}, errors.New(unsupportedAccountAwareSchemaError)
+			}
+			if err := rejectNullAccountLists(&document); err != nil {
+				return routerConfig{}, err
+			}
 		}
 	}
 	wire := routerConfigYAML{}
@@ -243,24 +266,28 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		if item.Models != nil && item.Targets != nil {
 			return routerConfig{}, fmt.Errorf("routes[%d] %q: must not contain both models and targets", index, strings.TrimSpace(item.Alias))
 		}
+		accounts, err := normalizeAccountIDs(item.AllowedAccounts, fmt.Sprintf("routes[%d].allowed_accounts", index))
+		if err != nil {
+			return routerConfig{}, err
+		}
 		targets := []modelTarget(nil)
 		if item.Targets != nil {
 			targets = normalizeTargetList(*item.Targets)
+			for targetIndex, target := range *item.Targets {
+				targetAccounts := append([]string(nil), accounts...)
+				if target.AllowedAccounts != nil {
+					targetAccounts, err = normalizeAccountIDs(target.AllowedAccounts, fmt.Sprintf("routes[%d].targets[%d].allowed_accounts", index, targetIndex))
+					if err != nil {
+						return routerConfig{}, err
+					}
+				}
+				targets[targetIndex].AllowedAccounts = targetAccounts
+			}
 		} else if item.Models != nil {
 			targets = normalizeLegacyTargetList(*item.Models)
-		}
-		var accounts []string
-		seenAccounts := make(map[string]int, len(item.AllowedAccounts))
-		for accountIndex, id := range item.AllowedAccounts {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				return routerConfig{}, fmt.Errorf("routes[%d].allowed_accounts[%d]: account ID is required", index, accountIndex)
+			for targetIndex := range targets {
+				targets[targetIndex].AllowedAccounts = append([]string(nil), accounts...)
 			}
-			if previous, duplicate := seenAccounts[id]; duplicate {
-				return routerConfig{}, fmt.Errorf("routes[%d].allowed_accounts[%d]: duplicate account ID (also at index %d)", index, accountIndex, previous)
-			}
-			seenAccounts[id] = accountIndex
-			accounts = append(accounts, id)
 		}
 		route := modelRoute{
 			Alias:           strings.TrimSpace(item.Alias),
@@ -268,7 +295,6 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 			CooldownSeconds: cooldown,
 			LastKnownGood:   policy,
 			Targets:         targets,
-			AllowedAccounts: accounts,
 		}
 		if route.Strategy == "" {
 			route.Strategy = routeStrategyPriority
@@ -440,6 +466,23 @@ func normalizeModelList(models []string) []string {
 	return out
 }
 
+func normalizeAccountIDs(ids accountIDList, field string) ([]string, error) {
+	accounts := make([]string, 0, len(ids))
+	seen := make(map[string]int, len(ids))
+	for index, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("%s[%d]: account ID is required", field, index)
+		}
+		if previous, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("%s[%d]: duplicate account ID (also at index %d)", field, index, previous)
+		}
+		seen[id] = index
+		accounts = append(accounts, id)
+	}
+	return accounts, nil
+}
+
 func normalizeLegacyTargetList(models []string) []modelTarget {
 	normalized := normalizeModelList(models)
 	targets := make([]modelTarget, 0, len(normalized))
@@ -477,12 +520,14 @@ func routeSignature(route modelRoute) string {
 		builder.WriteString(strings.TrimSpace(target.Model))
 		builder.WriteByte('\n')
 		builder.WriteString(strconv.Itoa(target.Weight))
-	}
-	for _, id := range route.AllowedAccounts {
 		builder.WriteByte('\n')
-		builder.WriteString(strconv.Itoa(len(id)))
-		builder.WriteByte(':')
-		builder.WriteString(id)
+		builder.WriteString(strconv.Itoa(len(target.AllowedAccounts)))
+		for _, id := range target.AllowedAccounts {
+			builder.WriteByte('\n')
+			builder.WriteString(strconv.Itoa(len(id)))
+			builder.WriteByte(':')
+			builder.WriteString(id)
+		}
 	}
 	return builder.String()
 }

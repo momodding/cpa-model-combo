@@ -155,9 +155,11 @@ dialog::backdrop { background: rgba(10, 18, 25, .46); backdrop-filter: blur(2px)
   .route-top { grid-template-columns: 1fr; }
   .route-actions { justify-content: flex-start; }
   .field { grid-column: 1 / -1; }
-  .target-row { grid-template-columns: 28px 1fr; padding: 9px; border: 1px solid var(--line); border-radius: 8px; }
+  .target-row { grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; padding: 9px; border: 1px solid var(--line); border-radius: 8px; }
+  .target-row select { grid-column: 3 / -1; }
+  .target-row .target-weight { grid-column: 3; grid-row: 2; }
   .target-row .icon-button, .target-row .danger-button { grid-row: 2; }
-  .target-row .icon-button:first-of-type { grid-column: 2; }
+  .target-account-control { grid-column: 3 / -1; grid-row: 3; }
   .configuration-actions-dock { padding: 10px max(10px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
   .footer-bar { align-items: flex-start; flex-direction: column; }
   .footer-actions { width: 100%; }

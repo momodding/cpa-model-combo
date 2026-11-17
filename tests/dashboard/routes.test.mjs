@@ -134,9 +134,51 @@ test('toggling enabled changes only the enabled field of the PATCH body', () => 
   assert.equal(after['model-routes'], null);
 });
 
-test('allowed accounts retain priority and clearing removes restrictions', () => {
-  const route = normalizeRoute({ alias: 'r', targets, allowed_accounts: ['second', 'first'] }, 0);
-  assert.deepEqual(Array.from(serializeRoutes([route])[0].allowed_accounts), ['second', 'first']);
-  route.allowed_accounts = [];
-  assert.equal('allowed_accounts' in serializeRoutes([route])[0], false);
+test('legacy account lists migrate independently and explicit empty overrides inheritance', () => {
+  const route = normalizeRoute({ alias: 'r', allowed_accounts: ['second', 'first'], targets: [{ model: 'a' }, { model: 'b', allowed_accounts: [] }, { model: 'c', allowed_accounts: ['third'] }] }, 0);
+  const payload = JSON.parse(JSON.stringify(serializeRoutes([route])[0]));
+  assert.equal('allowed_accounts' in payload, false);
+  assert.deepEqual(payload.targets.map(target => target.allowed_accounts || []), [['second', 'first'], [], ['third']]);
+  route.targets[0].allowed_accounts.push('extra');
+  assert.deepEqual(Array.from(route.targets[2].allowed_accounts), ['third']);
+  const legacy = normalizeRoute({ alias: 'r', models: ['a', 'b'], allowed_accounts: ['first'] }, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(serializeRoutes([legacy])[0].targets.map(target => target.allowed_accounts))), [['first'], ['first']]);
+});
+
+test('invalid target account lists are rejected with target paths', () => {
+  for (const accounts of [null, [''], [42], ['a', ' a ']]) {
+    const route = normalizeRoute({ alias: 'r', targets: [{ model: 'a', allowed_accounts: accounts }] }, 0);
+    const errors = validateRoutes(serializeRoutes([route]));
+    assert.ok(errors.some(error => error.includes('routes[0].targets[0].allowed_accounts')));
+  }
+});
+
+test('target eligibility respects unknown, disabled and known model support', () => {
+  const tab = readFileSync(join(here, '../../dashboard/configuration/tab.js'), 'utf8');
+  const state = { accounts: [], catalogLoaded: true, priority: '0', fallback: {} };
+  const context = { state, routesEl: { addEventListener() {} }, validateRoutes, validateFallback: () => [], Set, Map };
+  const { validateClient, modelsForRoute } = vm.runInNewContext(`${tab}\n({ validateClient, modelsForRoute })`, context);
+  const route = { alias: 'r', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'wanted', weight: 1, allowed_accounts: ['one'] }] };
+  state.accounts = [{ id: 'one', models: [], model_support_unknown: true }, { id: 'two', models: [{ id: 'discovered' }] }];
+  assert.equal(validateClient([route]).length, 0);
+  assert.equal(modelsForRoute(route.targets[0]).get('discovered'), 'support unknown');
+  state.accounts[0].model_support_unknown = false;
+  assert.ok(validateClient([route]).some(error => error.includes('does not support')));
+  state.accounts[0].disabled = true;
+  assert.ok(validateClient([route]).some(error => error.includes('unavailable')));
+});
+
+test('configuration snapshot tracks target and account order', () => {
+  const tab = readFileSync(join(here, '../../dashboard/configuration/tab.js'), 'utf8');
+  const state = { enabled: true, priority: '0', fallback: {}, routes: [normalizeRoute({ alias: 'r', targets: [{ model: 'a', allowed_accounts: ['b', 'a'] }, { model: 'b', allowed_accounts: [] }] }, 0)] };
+  const { configurationSnapshot } = vm.runInNewContext(`${source}\n${tab}\n({ configurationSnapshot })`, { state, routesEl: { addEventListener() {} } });
+  const original = configurationSnapshot();
+  state.routes[0].targets[0].allowed_accounts.reverse();
+  assert.notEqual(configurationSnapshot(), original);
+  state.routes[0].targets[0].allowed_accounts.reverse();
+  state.routes[0].targets.reverse();
+  assert.notEqual(configurationSnapshot(), original);
+  const saved = JSON.parse(JSON.stringify(serializeRoutes(state.routes)));
+  const reloaded = normalizeRoute(saved[0], 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(reloaded.targets.map(target => [target.model, target.allowed_accounts]))), [['b', []], ['a', ['b', 'a']]]);
 });
