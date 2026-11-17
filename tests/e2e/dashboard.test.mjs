@@ -388,6 +388,8 @@ test('account restrictions filter targets and reject stale selections', { timeou
     await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
     assert.equal('allowed_accounts' in saved.routes[0], false);
     assert.deepEqual(saved.routes[0].targets.map(target => target.allowed_accounts), [['account-b', 'account-a'], ['account-c']]);
+    await page.locator('#plugin-priority').fill('1');
+    page.once('dialog', dialog => dialog.accept());
     const reloadResponse = page.waitForResponse(response => response.url().includes('/v0/management/plugins/model-combo/config') && response.request().method() === 'GET');
     await page.locator('#reload').click();
     await reloadResponse;
