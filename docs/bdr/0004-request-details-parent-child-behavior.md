@@ -1,5 +1,9 @@
 # BDR 0004: Request details parent/child behavior
 
+## Status
+
+Superseded by [BDR 0005](0005-hideable-historical-request-columns.md).
+
 ## Behavior
 
 One inbound CPA request renders one parent row keyed by `request_id`. Expanding it shows ordered provider attempts. The parent displays inbound endpoint, requested model, stream state, final result, status, and end-to-end latency. Children display attempt number and provider accounting data.

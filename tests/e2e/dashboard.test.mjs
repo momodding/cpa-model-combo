@@ -195,6 +195,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await waitForUsageReady(page);
 
     let requestCalls = 0;
+    // These identity values represent historical records, not live CPA callback binding.
     const requestPage = {
       schema_version: 2, generated_at: new Date().toISOString(), price_book_revision: 0, total: 4, offset: 0, limit: 50,
       items: [
@@ -245,13 +246,51 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     assert.equal(requestCalls, 2);
     assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true', 'expansion persists across refresh');
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
-    await page.locator('#request-column-options input[data-column-key="time"]').uncheck();
+    await page.locator('#request-columns summary').click();
+    const requestOption = (key) => page.locator(`#request-column-options input[data-column-key="${key}"]`);
+    await requestOption('request_id').uncheck();
+    assert.equal(await page.locator('#request-headers th[data-column="request_id"]').count(), 0);
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›POST /v1/chat/completions');
     assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true');
-    assert.equal(await page.locator('#request-column-options input[data-column-key="request_id"]').isDisabled(), true);
-    await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).click();
-    assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 4);
+    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Attempt 1\s+—$/);
+    const savedPreferences = page.waitForResponse((response) => response.url().includes('/usage/preferences') && response.request().method() === 'PUT' && response.ok() && JSON.parse(response.request().postData()).hidden_request_columns.includes('request_endpoint'));
+    await requestOption('request_endpoint').uncheck();
+    assert.equal(await page.locator('#request-headers th[data-column="request_endpoint"]').count(), 0);
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›route-a');
+    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Attempt 1\s+—$/);
+    await savedPreferences;
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByRole('tab', { name: 'Usage tracking' }).click();
+    await waitForUsageReady(page);
+    await page.locator('#request-columns summary').click();
+    assert.equal(await requestOption('request_id').isChecked(), false, 'hidden Request ID survives preference reload');
+    assert.equal(await requestOption('request_endpoint').isChecked(), false, 'hidden API path survives preference reload');
+    await page.locator('#request-page-size').selectOption('25');
+    await waitForUsageReady(page);
+    await page.locator('#request-page-size').selectOption('50');
+    await waitForUsageReady(page);
+    await page.getByRole('button', { name: 'Expand provider attempts for request 1234' }).click();
+    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).evaluate((element) => element === document.activeElement), true);
+    assert.match(await page.locator('.request-attempt-row').first().locator('td').first().textContent(), /^Attempt 1\s+—$/);
     await page.getByRole('button', { name: 'Expand provider attempts for request sequence 104' }).click();
     assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request sequence 104' }).getAttribute('aria-expanded'), 'true');
+    const checkedKeys = await page.locator('#request-column-options input:checked').evaluateAll((inputs) => inputs.map((input) => input.dataset.columnKey));
+    if (!(await requestOption('result').isChecked())) await requestOption('result').check();
+    for (const key of checkedKeys.filter((key) => key !== 'result')) await requestOption(key).uncheck();
+    assert.equal(await requestOption('result').isDisabled(), true, 'last visible column cannot be hidden');
+    assert.equal(await page.locator('#request-headers th').count(), 1);
+    assert.equal(await page.locator('.request-parent-row').first().locator('.status-pill').textContent(), 'Success');
+    assert.equal(await page.locator('.request-attempt-row').first().locator('.status-pill').textContent(), 'HTTP 429');
+    assert.match(await page.locator('.request-attempt-row').first().locator('td').textContent(), /^Attempt 1\s+HTTP 429$/);
+    await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).click();
+    await page.getByRole('button', { name: 'Expand provider attempts for request 1234' }).click();
+    assert.equal(await page.locator('.request-attempt-row').first().isVisible(), true);
+    for (const key of checkedKeys) if (!(await requestOption(key).isChecked())) await requestOption(key).check();
+    if (!checkedKeys.includes('result')) await requestOption('result').uncheck();
+    await requestOption('request_id').check();
+    await requestOption('request_endpoint').check();
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›1234');
     await page.unroute('**/usage/requests?**', requestRoute);
 
     await page.setViewportSize({ width: 1440, height: 900 });

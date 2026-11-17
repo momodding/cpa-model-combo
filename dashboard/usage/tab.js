@@ -198,7 +198,6 @@ function applyUsagePreferences(preferences){
   usageState.customFrom=String(preferences.custom_from||'');
   usageState.customTo=String(preferences.custom_to||'');
   usageState.hiddenRequestColumns=validHiddenColumns(preferences.hidden_request_columns,requestColumns);
-  usageState.hiddenRequestColumns.delete('request_id');
   usageState.hiddenGroupColumns=validHiddenColumns(Array.isArray(preferences.hidden_group_columns)?preferences.hidden_group_columns:DEFAULT_HIDDEN_GROUP_COLUMNS,groupColumns);
   usageState.hiddenTokenSeries=new Set((Array.isArray(preferences.hidden_token_series)?preferences.hidden_token_series:[]).filter(value=>['input','output','cache_read','reasoning'].includes(value)));
   usageRangeEl.value=usageState.range;

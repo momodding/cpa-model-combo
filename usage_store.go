@@ -751,7 +751,6 @@ func (store *usageStore) QueryPreferences() (dashboardPreferences, error) {
 	if err == nil && len(raw) > 0 {
 		err = json.Unmarshal(raw, &preferences)
 	}
-	preferences.HiddenRequestColumns = removeRequiredRequestColumn(preferences.HiddenRequestColumns)
 	return preferences, err
 }
 

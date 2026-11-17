@@ -134,7 +134,7 @@ Each request row can contain:
 - a short masked API-key display value;
 - an estimated USD cost resolved at query time.
 
-Historical provider records may carry an inbound `request_id` and `request_endpoint` (for example `POST /v1/chat/completions`). A historical lifecycle session can contain its request ID, endpoint, requested and router models, attribution, stream flag, outcome, status, start/end times, and latency. Stock CPA usage callbacks do not supply the identity needed to join new provider records reliably to such sessions. The plugin does not add query strings or bodies to stored endpoints.
+Historical provider records may carry an inbound `request_id` and `request_endpoint` (for example `POST /v1/chat/completions`). A historical lifecycle session can contain its request ID, endpoint, requested and router models, attribution, stream flag, outcome, status, start/end times, and latency. Request ID and API path are available only from historical records: stock CPA usage callbacks lack the identity and endpoint needed to populate them reliably or join new provider records to such sessions. The plugin does not infer them or add query strings or bodies to stored endpoints.
 
 The plugin does not persist:
 
@@ -185,7 +185,7 @@ The Usage tracking tab includes:
 - model pricing and models.dev sync;
 - an explicit typed confirmation for history reset.
 
-Request details shows **Request ID**, **API path**, and **Requested model**, when available. Request ID is always visible and is removed from saved hidden-column preferences. Expansion state uses `id:<request_id>` or `legacy:<sequence>` for rows without an ID. New stock CPA usage records cannot be reliably joined to an inbound request ID; historical sessions can still be displayed.
+Request details shows **Request ID**, **API path**, and **Requested model** when available; requested model may also come from historical sessions. Request ID and API path are ordinary hideable columns. Attempt controls appear in the Request ID cell when visible, otherwise in the first visible data cell, without replacing its value. At least one data column must remain visible. Expansion state uses `id:<request_id>` or `legacy:<sequence>` for rows without an ID. New stock CPA usage records cannot be reliably joined to an inbound request ID; historical sessions can still be displayed.
 
 Children sharing one non-empty `router_request_id` sort by `router_attempt`, `requested_at`, then `sequence`; otherwise they sort by `requested_at`, then `sequence`. Historical lifecycle fields can supply the parent result and end-to-end latency.
 
@@ -205,7 +205,7 @@ AND the document is visible
 AND no newer refresh has replaced the timer
 ```
 
-Leaving the tab or hiding the document stops the timer and aborts the active request. Returning starts one fresh request set. Dashboard preferences are saved to SQLite after a short debounce. Both tables default to 50 rows. Router model, Provider, Source, Service tier, and Result are hidden by default in Usage breakdown; every column checkbox change updates `hidden_group_columns`. Existing saved selections, including an empty hidden list or a saved page size, remain authoritative, except that Request ID cannot be hidden.
+Leaving the tab or hiding the document stops the timer and aborts the active request. Returning starts one fresh request set. Dashboard preferences are saved to SQLite after a short debounce. Both tables default to 50 rows. Router model, Provider, Source, Service tier, and Result are hidden by default in Usage breakdown; every column checkbox change updates `hidden_group_columns`. Existing visibility defaults and saved selections, including an empty hidden list or a saved page size, remain authoritative. Preference saves that hide every column in a table are rejected.
 
 The page follows CPAMC light, white, and dark themes, redraws canvas charts after theme changes, supports keyboard tab and chart navigation, exposes visible focus states, fits metric values without ellipses, and collapses controls and charts for mobile widths. Token trends use packet-style columns, cost and efficiency use halo lines, and provider share uses a gapped donut. Hover and keyboard focus share the same active treatment: packet buckets widen and gain a marker, lines gain a guide and enlarged halo markers, and donut segments lift while peers dim. Successful request results use green pills. Saving valid model pricing closes the modal after the persisted price book is applied; validation or request failures leave it open.
 
@@ -230,7 +230,7 @@ Overview, group, and request queries accept RFC3339 `from` and `to` plus optiona
 
 The dashboard endpoint accepts the same filters and `granularity`, plus `group_dimension`, `group_sort`, `group_order`, `group_offset`, `group_limit`, `request_sort`, `request_order`, `request_offset`, and `request_limit`. Defaults and limits match the individual endpoints. It returns `overview`, `groups`, and `requests`, with a shared `generated_at`, `schema_version`, and `price_book_revision` on the outer response. Usage overview, group, request, and dashboard responses use management `schema_version: 2`, distinct from CPA plugin RPC schema and SQLite storage schema 2.
 
-Request-page `items` are parents, and `total` counts matching parents rather than provider callbacks. Parent details include `request_id`, `request_endpoint`, `requested_model`, `stream`, `result`, `status_code`, and `latency_ns` when available; `attempts` contains provider details and `attempt_count` reports their number when nonzero. Identity and attempt fields may be omitted when unavailable. Parent token and estimated cost values aggregate children. Parent time, attribution, router-model, and result filters apply to the parent; provider-model, source, and service-tier filters match any one child. Zero-child parents do not match those child-specific filters.
+Request-page `items` are parents, and `total` counts matching parents rather than provider callbacks. Parent details include `request_id`, `request_endpoint`, `requested_model`, `stream`, `result`, `status_code`, and `latency_ns` when available; `attempts` contains provider details and `attempt_count` reports their number when nonzero. Request ID and endpoint are historical-only, while requested model may also come from historical sessions. Identity and attempt fields may be omitted when unavailable; legacy `router_request_id` groups do not establish exact inbound request identity. Parent token and estimated cost values aggregate children. Parent time, attribution, router-model, and result filters apply to the parent; provider-model, source, and service-tier filters match any one child. Zero-child parents do not match those child-specific filters.
 
 ## Implementation map
 

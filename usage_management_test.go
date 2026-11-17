@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,10 +50,16 @@ func TestUsageManagementOverviewRequestsPricesPreferencesAndReset(t *testing.T) 
 
 	preferences := defaultDashboardPreferences()
 	preferences.RequestPageSize = 25
+	preferences.HiddenRequestColumns = []string{"request_id", "request_endpoint"}
 	preferencesBody, _ := json.Marshal(preferences)
 	savedPreferences := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPut, Path: modelRouterUsageBasePath + "/preferences", Body: preferencesBody})
 	if savedPreferences.StatusCode != http.StatusOK || !strings.Contains(string(savedPreferences.Body), `"request_page_size":25`) {
 		t.Fatalf("preferences = status %d body %s", savedPreferences.StatusCode, savedPreferences.Body)
+	}
+	loadedResponse := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterUsageBasePath + "/preferences"})
+	var roundTrip dashboardPreferences
+	if err := json.Unmarshal(loadedResponse.Body, &roundTrip); loadedResponse.StatusCode != http.StatusOK || err != nil || !slices.Equal(roundTrip.HiddenRequestColumns, []string{"request_endpoint", "request_id"}) {
+		t.Fatalf("preferences round trip = status %d body %s, error %v", loadedResponse.StatusCode, loadedResponse.Body, err)
 	}
 	reset := handleModelRouterManagement(plugin, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterUsageBasePath + "/reset", Body: []byte(`{"confirm":"reset"}`)})
 	if reset.StatusCode != http.StatusOK {

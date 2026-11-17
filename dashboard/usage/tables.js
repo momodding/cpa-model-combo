@@ -1,4 +1,4 @@
-function visibleColumns(definitions,hidden){return definitions.filter(column=>column.key==='request_id'||!hidden.has(column.key))}
+function visibleColumns(definitions,hidden){return definitions.filter(column=>!hidden.has(column.key))}
 function renderColumnControls(definitions,hidden,containerID,kind){
   const container=document.getElementById(containerID);
   const fragment=document.createDocumentFragment();
@@ -8,8 +8,8 @@ function renderColumnControls(definitions,hidden,containerID,kind){
     const input=document.createElement('input');
     const text=document.createElement('span');
     input.type='checkbox';
-    input.checked=column.key==='request_id'||!hidden.has(column.key);
-    input.disabled=column.key==='request_id'||(input.checked&&visibleCount<=1);
+    input.checked=!hidden.has(column.key);
+    input.disabled=input.checked&&visibleCount<=1;
     input.dataset.columnKind=kind;
     input.dataset.columnKey=column.key;
     text.textContent=column.label;
@@ -74,6 +74,7 @@ function groupCell(row,item,column){
 }
 function requestCell(row,item,column){
   switch(column.key){
+  case 'request_id':return tableCell(row,item.request_id,true);
   case 'time':return tableCell(row,formatRequestTime(item.requested_at),true);
   case 'router_model':return tableCell(row,routerDisplay(item),true);
   case 'request_endpoint':case 'requested_model':case 'provider_model':case 'provider':case 'source':case 'service_tier':return tableCell(row,item[column.key],true);
@@ -106,18 +107,25 @@ function renderGroupTable(){
   document.getElementById('group-next').disabled=usageState.group.offset+usageState.group.limit>=total;
 }
 function requestKey(item){return item.request_id?'id:'+item.request_id:'legacy:'+item.sequence}
-function requestIDCell(row,item,attemptNumber,controls){
-  const cell=document.createElement('td');cell.className='text-cell';
-  if(attemptNumber){cell.classList.add('request-attempt-id');cell.textContent='Attempt '+attemptNumber}
-  else if(controls){
-    const key=requestKey(item),expanded=usageState.expandedRequests.has(key),button=document.createElement('button');
-    button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=key;
-    button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',controls.join(' '));button.setAttribute('aria-label',(expanded?'Collapse':'Expand')+' provider attempts for request '+(item.request_id||'sequence '+item.sequence));button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
-    cell.appendChild(button);cell.appendChild(document.createTextNode(item.request_id||'—'));
-  }else cell.textContent=item.request_id||'—';
-  row.appendChild(cell);
+function requestRow(row,item,columns,attemptNumber,controls){
+  const controlColumn=columns.find(column=>column.key==='request_id')||columns[0];
+  columns.forEach(column=>{
+    requestCell(row,item,column);
+    if(column!==controlColumn)return;
+    const cell=row.lastElementChild;
+    if(attemptNumber){
+      cell.classList.add('request-attempt-id');
+      const label=document.createElement('span');label.textContent='Attempt '+attemptNumber;
+      if(column.key==='request_id')cell.replaceChildren(label);
+      else cell.prepend(label,document.createTextNode(' '));
+    }else if(controls){
+      const key=requestKey(item),expanded=usageState.expandedRequests.has(key),button=document.createElement('button');
+      button.type='button';button.className='request-attempt-toggle';button.dataset.requestToggle=key;
+      button.setAttribute('aria-expanded',String(expanded));button.setAttribute('aria-controls',controls.join(' '));button.setAttribute('aria-label',(expanded?'Collapse':'Expand')+' provider attempts for request '+(item.request_id||'sequence '+item.sequence));button.setAttribute('title',button.getAttribute('aria-label'));button.textContent='›';
+      cell.prepend(button);
+    }
+  });
 }
-function requestRow(row,item,columns,attemptNumber,controls){columns.forEach(column=>column.key==='request_id'?requestIDCell(row,item,attemptNumber,controls):requestCell(row,item,column))}
 function renderRequestTable(){
   const page=usageState.requestPage;
   const columns=renderTableHeaders(requestColumns,usageState.hiddenRequestColumns,'request-headers','request-table','request',usageState.request.sort,usageState.request.order);
