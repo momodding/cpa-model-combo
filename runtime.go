@@ -22,17 +22,24 @@ type routeObservation struct {
 }
 
 type routeState struct {
-	signature    string
-	cursor       int64
-	cooldowns    map[string]time.Time
-	lastSuccess  string
-	observations map[string][]routeObservation
+	signature        string
+	cursor           int64
+	cooldowns        map[string]time.Time
+	accountCooldowns map[string]map[string]time.Time
+	lastSuccess      string
+	observations     map[string][]routeObservation
 }
 
 type routeSelection struct {
 	model      string
 	allCooling bool
 	retryAfter time.Duration
+}
+
+type routingSkip struct {
+	Model      string
+	Credential accountCredential
+	RetryAt    time.Time
 }
 
 func newRouteRuntime(now func() time.Time) *routeRuntime {
@@ -103,6 +110,15 @@ func (runtime *routeRuntime) Clone(routes []modelRoute) *routeRuntime {
 			}
 			for model, until := range old.cooldowns {
 				state.cooldowns[model] = until
+			}
+			for model, accounts := range old.accountCooldowns {
+				if state.accountCooldowns == nil {
+					state.accountCooldowns = make(map[string]map[string]time.Time)
+				}
+				state.accountCooldowns[model] = make(map[string]time.Time, len(accounts))
+				for id, until := range accounts {
+					state.accountCooldowns[model][id] = until
+				}
 			}
 		}
 		cloned.states[key] = state
@@ -213,6 +229,85 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 	return routeSelection{allCooling: true, retryAfter: earliest.Sub(now)}
 }
 
+func (runtime *routeRuntime) Preflight(route modelRoute, accounts map[string][]accountCredential, unavailable map[string]struct{}) (map[string][]accountCredential, map[string]struct{}, []routingSkip, time.Duration, bool) {
+	eligible := make(map[string][]accountCredential, len(route.Targets))
+	excluded := make(map[string]struct{}, len(unavailable))
+	var skips []routingSkip
+	var earliest time.Time
+	anyEligible, anyUnavailable := false, false
+	if runtime == nil {
+		return accounts, unavailable, nil, 0, false
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state == nil {
+		return accounts, unavailable, nil, 0, false
+	}
+	now := runtime.now()
+	for _, target := range route.Targets {
+		model := strings.TrimSpace(target.Model)
+		key := routeKey(model)
+		if _, missing := unavailable[key]; missing {
+			excluded[key] = struct{}{}
+			anyUnavailable = true
+			continue
+		}
+		if until := state.cooldowns[key]; now.Before(until) {
+			excluded[key] = struct{}{}
+			skips = append(skips, routingSkip{Model: model, RetryAt: until})
+			if earliest.IsZero() || until.Before(earliest) {
+				earliest = until
+			}
+			continue
+		}
+		if len(target.AllowedAccounts) == 0 {
+			eligible[key] = accounts[key]
+			anyEligible = true
+			continue
+		}
+		var cooling []routingSkip
+		for _, account := range accounts[key] {
+			until := state.accountCooldowns[key][account.ID]
+			if account.NextRetryAfter.After(until) {
+				until = account.NextRetryAfter
+			}
+			if now.Before(until) {
+				cooling = append(cooling, routingSkip{Model: model, Credential: account, RetryAt: until})
+			} else {
+				eligible[key] = append(eligible[key], account)
+			}
+		}
+		if len(eligible[key]) != 0 {
+			anyEligible = true
+			skips = append(skips, cooling...)
+			continue
+		}
+		excluded[key] = struct{}{}
+		if len(cooling) == 0 {
+			anyUnavailable = true
+			continue
+		}
+		first := cooling[0]
+		for _, skip := range cooling[1:] {
+			if skip.RetryAt.Before(first.RetryAt) {
+				first.RetryAt = skip.RetryAt
+			}
+		}
+		if len(cooling) != 1 {
+			first.Credential = accountCredential{}
+		}
+		skips = append(skips, first)
+		if earliest.IsZero() || first.RetryAt.Before(earliest) {
+			earliest = first.RetryAt
+		}
+	}
+	if !anyEligible && !anyUnavailable && !earliest.IsZero() {
+		return eligible, excluded, skips, earliest.Sub(now), true
+	}
+	return eligible, excluded, skips, 0, false
+}
+
 func (runtime *routeRuntime) MarkFailure(route modelRoute, model string) {
 	if runtime == nil || strings.TrimSpace(model) == "" {
 		return
@@ -230,7 +325,79 @@ func (runtime *routeRuntime) MarkFailure(route modelRoute, model string) {
 		model = strings.TrimSpace(model)
 		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now})
 	}
+}
 
+func (runtime *routeRuntime) MarkCooldown(route modelRoute, model string, until time.Time) {
+	if runtime == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if state := runtime.stateLocked(route); state != nil && until.After(state.cooldowns[routeKey(model)]) {
+		state.cooldowns[routeKey(model)] = until
+	}
+}
+
+func (runtime *routeRuntime) MarkAccountCooldown(route modelRoute, model, id string, until time.Time) {
+	if runtime == nil || strings.TrimSpace(model) == "" || id == "" {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state == nil {
+		return
+	}
+	if state.accountCooldowns == nil {
+		state.accountCooldowns = make(map[string]map[string]time.Time)
+	}
+	key := routeKey(model)
+	if state.accountCooldowns[key] == nil {
+		state.accountCooldowns[key] = make(map[string]time.Time)
+	}
+	if until.After(state.accountCooldowns[key][id]) {
+		state.accountCooldowns[key][id] = until
+	}
+}
+
+func (runtime *routeRuntime) MarkAccountFailure(route modelRoute, model, id string) {
+	if runtime == nil || strings.TrimSpace(model) == "" || id == "" {
+		return
+	}
+	cooldown := time.Duration(route.CooldownSeconds) * time.Second
+	if cooldown <= 0 {
+		cooldown = defaultCooldownSeconds * time.Second
+	}
+	runtime.MarkAccountCooldown(route, model, id, runtime.now().Add(cooldown))
+	runtime.RecordFailure(route, model)
+}
+
+func (runtime *routeRuntime) RecordFailure(route modelRoute, model string) {
+	if runtime == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if state := runtime.stateLocked(route); state != nil {
+		now := runtime.now()
+		model = strings.TrimSpace(model)
+		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now})
+	}
+}
+
+func (runtime *routeRuntime) MarkAccountSuccess(route modelRoute, model, id string) {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	if state := runtime.stateLocked(route); state != nil {
+		delete(state.accountCooldowns[routeKey(model)], id)
+		model = strings.TrimSpace(model)
+		state.lastSuccess = model
+		now := runtime.now()
+		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now, success: true})
+	}
+	runtime.mu.Unlock()
 }
 func (runtime *routeRuntime) stateLocked(route modelRoute) *routeState {
 	key := routeKey(route.Alias)
@@ -315,6 +482,7 @@ func (runtime *routeRuntime) MarkSuccess(route modelRoute, model string) {
 			state.observations = make(map[string][]routeObservation)
 		}
 		model = strings.TrimSpace(model)
+		delete(state.cooldowns, routeKey(model))
 		state.lastSuccess = model
 		now := runtime.now()
 		state.observations[model] = append(pruneObservations(state.observations[model], now, route.LastKnownGood.ObservationWindowMinutes), routeObservation{at: now, success: true})

@@ -4,6 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +13,28 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+const correlationHeader = "X-Model-Combo-Correlation"
+
+type correlationIdentity struct {
+	TraceID            string
+	LifecycleRequestID string
+	token              string
+}
+
+type routingSkipEvent struct {
+	TraceID            string
+	LifecycleRequestID string
+	Attempt            int
+	Skip               routingSkip
+}
+
+type correlationEntry struct {
+	identity    correlationIdentity
+	startedAt   time.Time
+	nextAttempt int
+	skips       []routingSkipEvent
+}
 
 const (
 	attributionRouted     = "routed"
@@ -44,12 +68,13 @@ type attributionMarker struct {
 }
 
 type attributionTracker struct {
-	mu        sync.Mutex
-	secret    [sha256.Size]byte
-	markers   []attributionMarker
-	nextID    uint64
-	lastPrune time.Time
-	now       func() time.Time
+	mu           sync.Mutex
+	secret       [sha256.Size]byte
+	markers      []attributionMarker
+	nextID       uint64
+	lastPrune    time.Time
+	correlations map[string]*correlationEntry
+	now          func() time.Time
 }
 
 func newAttributionTracker(now func() time.Time) *attributionTracker {
@@ -62,6 +87,96 @@ func newAttributionTracker(now func() time.Time) *attributionTracker {
 		tracker.secret = sha256.Sum256(stamp)
 	}
 	return tracker
+}
+func (tracker *attributionTracker) issueCorrelation(traceID, requestID string) (string, error) {
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(random[:])
+	now := tracker.now().UTC()
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.pruneCorrelationsLocked(now)
+	if tracker.correlations == nil {
+		tracker.correlations = make(map[string]*correlationEntry)
+	}
+	if len(tracker.correlations) >= maxAttributionMarks {
+		return "", nil
+	}
+	tracker.correlations[token] = &correlationEntry{identity: correlationIdentity{TraceID: traceID, LifecycleRequestID: requestID, token: token}, startedAt: now}
+	return token, nil
+}
+
+func (tracker *attributionTracker) pruneCorrelationsLocked(now time.Time) {
+	for token, entry := range tracker.correlations {
+		if now.Sub(entry.startedAt) >= attributionRetention {
+			delete(tracker.correlations, token)
+		}
+	}
+}
+
+func (p *modelRouterPlugin) resolveCorrelation(headers http.Header) correlationIdentity {
+	if p == nil || p.attribution == nil {
+		return correlationIdentity{}
+	}
+	tracker := p.attribution
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.pruneCorrelationsLocked(tracker.now().UTC())
+	if entry := tracker.correlations[headers.Get(correlationHeader)]; entry != nil {
+		return entry.identity
+	}
+	return correlationIdentity{}
+}
+
+func (p *modelRouterPlugin) recordRoutingSkip(identity correlationIdentity, skip routingSkip) {
+	if p == nil || p.attribution == nil {
+		log.Print("model-router: uncorrelated cooldown skip")
+		return
+	}
+	tracker := p.attribution
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.pruneCorrelationsLocked(tracker.now().UTC())
+	entry := tracker.correlations[identity.token]
+	if entry == nil || entry.identity != identity {
+		log.Print("model-router: uncorrelated cooldown skip")
+		return
+	}
+	entry.skips = append(entry.skips, routingSkipEvent{TraceID: identity.TraceID, LifecycleRequestID: identity.LifecycleRequestID, Attempt: entry.nextAttempt, Skip: skip})
+	if p.store != nil {
+		_ = p.store.RecordRoutingSkip(storedRoutingSkip{TraceID: identity.TraceID, LifecycleRequestID: identity.LifecycleRequestID, Attempt: entry.nextAttempt, RequestedAt: tracker.now().UTC(), Model: skip.Model, CredentialID: skip.Credential.ID, CredentialLabel: skip.Credential.Label, RetryAt: skip.RetryAt})
+	}
+	entry.nextAttempt++
+}
+
+func (p *modelRouterPlugin) nextCorrelationAttempt(identity correlationIdentity) int {
+	if p == nil || p.attribution == nil {
+		return -1
+	}
+	tracker := p.attribution
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.pruneCorrelationsLocked(tracker.now().UTC())
+	entry := tracker.correlations[identity.token]
+	if entry == nil || entry.identity != identity {
+		return -1
+	}
+	attempt := entry.nextAttempt
+	entry.nextAttempt++
+	return attempt
+}
+
+func (tracker *attributionTracker) completeCorrelation(traceID, requestID string) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.pruneCorrelationsLocked(tracker.now().UTC())
+	for token, entry := range tracker.correlations {
+		if entry.identity.TraceID == traceID && entry.identity.LifecycleRequestID == requestID {
+			delete(tracker.correlations, token)
+		}
+	}
 }
 
 func (tracker *attributionTracker) MarkDirect(request pluginapi.ModelRouteRequest) {

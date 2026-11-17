@@ -31,6 +31,54 @@ func TestRouteRuntimePriorityCooldown(t *testing.T) {
 	}
 }
 
+func TestRouteRuntimeScopedPreflight(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	runtime := newRouteRuntime(func() time.Time { return now })
+	route := testModelRoute("smart", routeStrategyPriority, 30, "a", "b")
+	route.Targets[0].AllowedAccounts = []string{"one", "two"}
+	route.Targets[1].AllowedAccounts = []string{"three"}
+	accounts := map[string][]accountCredential{
+		"a": {{ID: "one"}, {ID: "two"}},
+		"b": {{ID: "three", NextRetryAfter: now.Add(20 * time.Second)}},
+	}
+	runtime.MarkAccountFailure(route, "a", "one")
+	eligible, excluded, skips, _, allCooling := runtime.Preflight(route, accounts, nil)
+	if allCooling || len(eligible["a"]) != 1 || eligible["a"][0].ID != "two" || len(excluded) != 1 || len(skips) != 2 || skips[0].Credential.ID != "one" || skips[1].Credential.ID != "three" {
+		t.Fatalf("preflight eligible=%#v excluded=%#v skips=%#v cooling=%v", eligible, excluded, skips, allCooling)
+	}
+	runtime.MarkAccountFailure(route, "a", "two")
+	_, _, skips, retry, allCooling := runtime.Preflight(route, accounts, nil)
+	if !allCooling || retry != 20*time.Second || len(skips) != 2 || skips[0].Credential.ID != "" {
+		t.Fatalf("all cooling skips=%#v retry=%v cooling=%v", skips, retry, allCooling)
+	}
+	clone := runtime.Clone([]modelRoute{route})
+	runtime.MarkAccountSuccess(route, "a", "one")
+	eligible, _, _, _, _ = runtime.Preflight(route, accounts, nil)
+	if len(eligible["a"]) != 1 || eligible["a"][0].ID != "one" {
+		t.Fatalf("success did not clear scope: %#v", eligible)
+	}
+	_, _, _, _, allCooling = clone.Preflight(route, accounts, nil)
+	if !allCooling {
+		t.Fatal("clone lost independent cooldowns")
+	}
+	now = now.Add(31 * time.Second)
+	eligible, _, _, _, allCooling = clone.Preflight(route, accounts, nil)
+	if allCooling || len(eligible["a"]) != 2 || len(eligible["b"]) != 1 {
+		t.Fatalf("expired cooldowns: %#v", eligible)
+	}
+}
+
+func TestRouteRuntimePreflightModelCooldownAndUnavailable(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	runtime := newRouteRuntime(func() time.Time { return now })
+	route := testModelRoute("smart", routeStrategyPriority, 30, "a", "b")
+	runtime.MarkCooldown(route, "a", now.Add(10*time.Second))
+	_, excluded, skips, retry, allCooling := runtime.Preflight(route, nil, map[string]struct{}{"b": {}})
+	if allCooling || retry != 0 || len(excluded) != 2 || len(skips) != 1 || skips[0].Model != "a" || skips[0].Credential.ID != "" {
+		t.Fatalf("preflight excluded=%#v skips=%#v retry=%v cooling=%v", excluded, skips, retry, allCooling)
+	}
+}
+
 func TestRouteRuntimeRoundRobin(t *testing.T) {
 	runtime := newRouteRuntime(nil)
 	route := testModelRoute("smart", routeStrategyRoundRobin, 30, "a", "b")

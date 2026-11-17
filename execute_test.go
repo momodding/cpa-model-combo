@@ -100,6 +100,31 @@ func (host *fakeModelHost) ClosePluginStream(streamID, message string) {
 	}
 }
 
+func TestExecuteRestrictedCooldownKeepsSiblingAvailable(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
+	route.Targets[0].AllowedAccounts = []string{"a", "b"}
+	plugin := testRouterPlugin(route)
+	host := routingTestHost()
+	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Headers.Get(correlationHeader) != "" {
+			t.Fatal("internal correlation header leaked to host")
+		}
+		if request.AuthID == "a" {
+			return pluginapi.HostModelExecutionResponse{StatusCode: 429}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200, Body: []byte(`{}`)}, nil
+	}
+	request := pluginapi.ExecutorRequest{Model: "smart", Headers: http.Header{correlationHeader: {"spoof"}}}
+	for range 2 {
+		if _, err := plugin.executeWithHost(request, host); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(host.executeCalls) != 3 || host.executeCalls[0].AuthID != "a" || host.executeCalls[1].AuthID != "b" || host.executeCalls[2].AuthID != "b" {
+		t.Fatalf("calls = %#v", host.executeCalls)
+	}
+}
+
 func TestExecuteWithHostAvailabilityFailures(t *testing.T) {
 	for _, status := range []int{400, 401, 402, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -372,7 +397,9 @@ func TestExecuteWithHostLastKnownGoodRecordsOnlyHostSuccess(t *testing.T) {
 
 func TestRestrictedExecuteAccountFailover(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b"}
+	}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -386,13 +413,13 @@ func TestRestrictedExecuteAccountFailover(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(host.executeCalls) != 4 || host.modelCalls != 2 || host.listCalls != 2 {
+	if len(host.executeCalls) != 3 || host.modelCalls != 2 || host.listCalls != 2 {
 		t.Fatalf("calls = %#v, catalog calls = %d/%d", host.executeCalls, host.modelCalls, host.listCalls)
 	}
 	for i, call := range host.executeCalls {
-		wantID, wantProvider := "a", "one"
-		if i%2 == 1 {
-			wantID, wantProvider = "b", "two"
+		wantID, wantProvider := "b", "two"
+		if i == 0 {
+			wantID, wantProvider = "a", "one"
 		}
 		if call.AuthID != wantID || call.ForcedProvider != wantProvider || call.Model != "model-a(high)" {
 			t.Fatalf("call %d = %#v", i, call)
@@ -402,7 +429,9 @@ func TestRestrictedExecuteAccountFailover(t *testing.T) {
 
 func TestRestrictedExecuteFallbackAndFailClosed(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b", "missing"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b", "missing"}
+	}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.entries = []pluginapi.HostAuthFileEntry{{ID: "a", Disabled: true}}
@@ -418,7 +447,9 @@ func TestRestrictedExecuteFallbackAndFailClosed(t *testing.T) {
 	if len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "b" || host.executeCalls[1].AuthID != "b" || host.executeCalls[1].Model != "model-b" {
 		t.Fatalf("calls = %#v", host.executeCalls)
 	}
-	route.AllowedAccounts = []string{"missing", "a"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"missing", "a"}
+	}
 	plugin = testRouterPlugin(route)
 	host.executeCalls = nil
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
@@ -434,7 +465,7 @@ func TestRestrictedExecuteFallbackAndFailClosed(t *testing.T) {
 
 func TestRestrictedExecuteTerminalAndCooldown(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a")
-	route.AllowedAccounts = []string{"a", "b"}
+	route.Targets[0].AllowedAccounts = []string{"a", "b"}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -460,7 +491,9 @@ func TestRestrictedExecuteTerminalAndCooldown(t *testing.T) {
 
 func TestRestrictedExecuteCancellationStopsDespiteStatus(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b"}
+	}
 	plugin := testRouterPlugin(route)
 	host := routingTestHost()
 	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -478,9 +511,47 @@ func TestRestrictedExecuteCancellationStopsDespiteStatus(t *testing.T) {
 	}
 }
 
+func TestExecuteTargetAccountIsolationAndUnknownSupport(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.Targets[0].AllowedAccounts = []string{"a"}
+	route.Targets[1].AllowedAccounts = []string{"b"}
+	host := routingTestHost()
+	host.models[0].Models = nil
+	host.execute = func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Model == "model-a" {
+			return pluginapi.HostModelExecutionResponse{StatusCode: 429}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}
+	if _, err := testRouterPlugin(route).executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "a" || host.executeCalls[1].AuthID != "b" {
+		t.Fatalf("calls = %#v", host.executeCalls)
+	}
+}
+
+func TestExecuteCatalogFailureAllowsUnrestrictedTarget(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	route.Targets[0].AllowedAccounts = []string{"a"}
+	host := routingTestHost()
+	host.catalogErr = errors.New("catalog unavailable")
+	host.execute = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}
+	if _, err := testRouterPlugin(route).executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.executeCalls) != 1 || host.executeCalls[0].Model != "model-b" || host.executeCalls[0].AuthID != "" {
+		t.Fatalf("calls = %#v", host.executeCalls)
+	}
+}
+
 func TestRestrictedExecuteRespectsTargetAttemptLimit(t *testing.T) {
 	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
-	route.AllowedAccounts = []string{"a", "b"}
+	for i := range route.Targets {
+		route.Targets[i].AllowedAccounts = []string{"a", "b"}
+	}
 	plugin := testRouterPlugin(route)
 	plugin.config.MaxAttempts = 1
 	host := routingTestHost()
@@ -490,6 +561,22 @@ func TestRestrictedExecuteRespectsTargetAttemptLimit(t *testing.T) {
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
 	if codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 || host.executeCalls[0].AuthID != "a" || host.executeCalls[1].AuthID != "b" {
 		t.Fatalf("error = %v, calls = %#v", err, host.executeCalls)
+	}
+}
+
+func TestExecuteCoolingSkipDoesNotConsumeAttemptLimit(t *testing.T) {
+	route := testModelRoute("smart", routeStrategyPriority, 30, "model-a", "model-b")
+	plugin := testRouterPlugin(route)
+	plugin.config.MaxAttempts = 1
+	plugin.runtime.MarkFailure(route, "model-a")
+	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 200}, nil
+	}}
+	if _, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.executeCalls) != 1 || host.executeCalls[0].Model != "model-b" {
+		t.Fatalf("calls = %#v", host.executeCalls)
 	}
 }
 

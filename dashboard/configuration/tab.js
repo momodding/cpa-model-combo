@@ -10,10 +10,10 @@ function configurationSnapshot(){
       success_rate_threshold:route.success_rate_threshold===undefined?undefined:String(route.success_rate_threshold).trim(),
       minimum_samples:route.minimum_samples===undefined?undefined:canonicalIntegerDraft(route.minimum_samples),
       observation_window_minutes:route.observation_window_minutes===undefined?undefined:canonicalIntegerDraft(route.observation_window_minutes),
-      allowed_accounts:route.allowed_accounts.slice(),
       targets:(Array.isArray(route.targets)?route.targets:[]).map(target=>({
         model:String(target.model===undefined||target.model===null?'':target.model).trim(),
-        weight:canonicalIntegerDraft(target.weight)
+        weight:canonicalIntegerDraft(target.weight),
+        allowed_accounts:Array.isArray(target.allowed_accounts)?target.allowed_accounts.slice():target.allowed_accounts
       }))
     }))
   });
@@ -104,18 +104,22 @@ function normalizeModelCatalog(payload){
   if(!payload||!Array.isArray(payload.credentials))throw new Error('CPA returned an invalid account catalog.');
   return payload.credentials.filter(account=>account&&typeof account.id==='string'&&account.id&&Array.isArray(account.models));
 }
-function modelsForRoute(route){
-  const selected=new Set(route.allowed_accounts);
+function modelsForRoute(target){
+  const selected=new Set(Array.isArray(target.allowed_accounts)?target.allowed_accounts:[]);
+  const accounts=state.accounts||[];
+  const eligible=accounts.filter(account=>!account.disabled&&(!selected.size||selected.has(account.id)));
+  const unknown=eligible.some(account=>account.model_support_unknown);
   const models=new Map();
-  (state.accounts||[]).forEach(account=>{
-    if(account.disabled||(selected.size&&!selected.has(account.id)))return;
+  accounts.forEach(account=>{
+    if(account.disabled||(!unknown&&selected.size&&!selected.has(account.id)))return;
     account.models.forEach(model=>{
       if(!model||typeof model.id!=='string'||!model.id.trim())return;
       const id=model.id.trim();
-      if(!models.has(id))models.set(id,'unknown');
+      if(!models.has(id))models.set(id,[]);
+      if(eligible.includes(account)&&!account.model_support_unknown)models.get(id).push(account.label||account.id);
     });
   });
-  return models;
+  return new Map(Array.from(models,([id,labels])=>[id,labels.length?labels.join(', '):'support unknown']));
 }
 function catalogHasModel(models,value){
   const base=value.replace(/\([^()]+\)$/,'').trim();
@@ -199,13 +203,14 @@ function createTargetRow(target,targetIndex,targetCount,weighted,route){
   placeholder.disabled=true;
   placeholder.selected=!model;
   select.appendChild(placeholder);
-  const modelCatalog=modelsForRoute(route);
+  const modelCatalog=modelsForRoute(target);
   const available=new Set(modelCatalog.keys());
   if(model&&!available.has(model)){
     const unavailable=document.createElement('option');
     unavailable.value=model;
-    const supported=catalogHasModel(available,model);
-    unavailable.textContent=model+(supported?'':' (unavailable)');
+    const unknown=(state.accounts||[]).some(account=>!account.disabled&&account.model_support_unknown&&(!target.allowed_accounts?.length||target.allowed_accounts.includes(account.id)));
+    const supported=catalogHasModel(available,model)||unknown;
+    unavailable.textContent=model+(unknown&&!catalogHasModel(available,model)?' (support unknown)':supported?'':' (unavailable)');
     unavailable.disabled=!supported;
     unavailable.selected=true;
     select.appendChild(unavailable);
@@ -217,19 +222,38 @@ function createTargetRow(target,targetIndex,targetCount,weighted,route){
   Array.from(modelCatalog.keys()).sort((a,b)=>a.localeCompare(b)).forEach(availableModel=>{
     const option=document.createElement('option');
     option.value=availableModel;
-    option.textContent=availableModel+(modelCatalog.get(availableModel)==='unknown'?' (entitlement unknown)':'');
+    option.textContent=availableModel+' ('+modelCatalog.get(availableModel)+')';
+    option.title=option.textContent;
     select.appendChild(option);
   });
   if(model&&available.has(model))select.value=model;
   select.disabled=!state.catalogLoaded;
+  if(!select.title)select.title=select.selectedOptions[0]?.textContent||'';
+  const disclosure=row.querySelector('[data-action="toggle-accounts"]');
+  const panel=row.querySelector('.target-accounts');
+  const selected=Array.isArray(target.allowed_accounts)?target.allowed_accounts:[];
+  disclosure.textContent=selected.length?selected.length+(selected.length===1?' account selected':' accounts selected'):'All accounts';
+  const known=new Set((state.accounts||[]).map(account=>account.id));
+  const accounts=[...(state.accounts||[]),...selected.filter(id=>!known.has(id)).map(id=>({id,label:id,disabled:true}))];
+  accounts.forEach(account=>{
+    const label=document.createElement('label');
+    const checkbox=document.createElement('input');
+    checkbox.type='checkbox';
+    checkbox.dataset.accountId=account.id;
+    checkbox.checked=selected.includes(account.id);
+    checkbox.disabled=Boolean(account.disabled)&&!checkbox.checked;
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode(' '+(account.label||account.id)+' ('+account.id+')'+(account.disabled?' (unavailable)':account.model_support_unknown?' (support unknown)':'')));
+    panel.appendChild(label);
+  });
+  if(!state.catalogLoaded){
+    const message=document.createElement('small');
+    message.textContent=state.catalogError||'Loading accounts…';
+    panel.appendChild(message);
+  }
   row.querySelector('[data-action="target-up"]').disabled=targetIndex===0;
   row.querySelector('[data-action="target-down"]').disabled=targetIndex===targetCount-1;
   return row;
-}
-function accountHelpText(route){
-  return route.allowed_accounts.length
-    ?'Only the selected accounts are used, in the order they were chosen. Clear every selection to allow all accounts.'
-    :'No accounts selected: all accounts allowed.';
 }
 function createRouteCard(route,index){
   const card=document.getElementById('route-template').content.firstElementChild.cloneNode(true);
@@ -249,55 +273,6 @@ function createRouteCard(route,index){
   const weighted=route.strategy==='round-robin';
   card.querySelector('[data-target-help]').hidden=!weighted;
   card.querySelector('.preview-targets').textContent=route.targets.length+(route.targets.length===1?' target':' targets');
-  const accounts=document.createElement('fieldset');
-  const legend=document.createElement('legend');
-  legend.textContent='Allowed accounts';
-  accounts.appendChild(legend);
-  const help=document.createElement('small');
-  help.dataset.accountHelp='';
-  help.setAttribute('role','status');
-  help.textContent=accountHelpText(route);
-  accounts.appendChild(help);
-  const groups=new Map();
-  (state.accounts||[]).forEach(account=>{
-    const provider=account.provider||'Unknown provider';
-    if(!groups.has(provider))groups.set(provider,[]);
-    groups.get(provider).push(account);
-  });
-  const known=new Set((state.accounts||[]).map(account=>account.id));
-  const stale=route.allowed_accounts.filter(id=>!known.has(id));
-  if(stale.length)groups.set('Unavailable accounts',stale.map(id=>({id,label:id,disabled:true})));
-  groups.forEach((items,provider)=>{
-    const group=document.createElement('div');
-    const heading=document.createElement('strong');
-    heading.textContent=provider;
-    group.appendChild(heading);
-    items.forEach(account=>{
-      const label=document.createElement('label');
-      label.style.display='block';
-      const checkbox=document.createElement('input');
-      checkbox.type='checkbox';
-      checkbox.dataset.accountId=account.id;
-      checkbox.checked=route.allowed_accounts.includes(account.id);
-      checkbox.disabled=Boolean(account.disabled)&&!checkbox.checked;
-      label.appendChild(checkbox);
-      label.appendChild(document.createTextNode(' '+(account.label||account.id)+' ('+account.id+')'+(account.disabled?' (unavailable)':'')));
-      if(account.models){
-        const details=document.createElement('small');
-        details.style.display='block';
-        details.textContent=account.models.length?account.models.map(model=>model.id+' ('+(model.entitlement||'unknown')+')').join(', '):'No registered models';
-        label.appendChild(details);
-      }
-      group.appendChild(label);
-    });
-    accounts.appendChild(group);
-  });
-  if(!state.catalogLoaded){
-    const message=document.createElement('small');
-    message.textContent=state.catalogError||'Loading accounts…';
-    accounts.appendChild(message);
-  }
-  card.querySelector('.targets').before(accounts);
   const targetList=card.querySelector('.target-list');
   if(route.targets.length===0){
     const empty=document.createElement('div');
@@ -332,6 +307,11 @@ function renumberRouteCards(){
       row.querySelector('[data-action="target-up"]').disabled=rowIndex===0;
       row.querySelector('[data-action="target-down"]').disabled=rowIndex===rows.length-1;
       const weight=row.querySelector('[data-target-field="weight"]');
+      const disclosure=row.querySelector('[data-action="toggle-accounts"]');
+      const panel=row.querySelector('.target-accounts');
+      panel.id='target-accounts-'+index+'-'+rowIndex;
+      disclosure.setAttribute('aria-controls',panel.id);
+      disclosure.setAttribute('aria-label','Accounts for target '+(rowIndex+1));
       if(weight)weight.setAttribute('aria-label','Round-robin weight for target '+(rowIndex+1));
     });
   });
@@ -380,13 +360,14 @@ function renderRoutes(){
     routesEl.appendChild(document.getElementById('empty-template').content.cloneNode(true));
   }else{
     state.routes.forEach((route,index)=>routesEl.appendChild(createRouteCard(route,index)));
+    renumberRouteCards();
   }
   if(preserve){
     restoreRouteFocus(focus);
     window.scrollTo(scrollX,scrollY);
   }
 }
-function newRoute(){return{alias:'route-'+(state.routes.length+1),strategy:'priority',cooldown_seconds:'60',allowed_accounts:[],targets:[{model:'',weight:'1'}]}}
+function newRoute(){return{alias:'route-'+(state.routes.length+1),strategy:'priority',cooldown_seconds:'60',targets:[{model:'',weight:'1',allowed_accounts:[]}]}}
 function addRoute(){state.routes.push(newRoute());renderRoutes();refreshDirty()}
 function routeIndexFrom(target){
   const card=target.closest('.route-card');
@@ -423,13 +404,19 @@ function updateFromInput(target){
   if(index<0||!state.routes[index])return;
   const route=state.routes[index];
   if(target.dataset.accountId){
+    const row=target.closest('.target-row');
+    const item=route.targets[Number.parseInt(row.dataset.targetIndex,10)];
+    if(!Array.isArray(item.allowed_accounts))return;
     const id=target.dataset.accountId;
-    if(target.checked&&!route.allowed_accounts.includes(id))route.allowed_accounts.push(id);
-    else if(!target.checked)route.allowed_accounts=route.allowed_accounts.filter(value=>value!==id);
-    const card=target.closest('.route-card');
-    const list=card.querySelector('.target-list');
-    if(route.targets.length)list.replaceChildren(...route.targets.map((item,i)=>createTargetRow(item,i,route.targets.length,route.strategy==='round-robin',route)));
-    card.querySelector('[data-account-help]').textContent=accountHelpText(route);
+    if(target.checked&&!item.allowed_accounts.includes(id))item.allowed_accounts.push(id);
+    else if(!target.checked)item.allowed_accounts=item.allowed_accounts.filter(value=>value!==id);
+    const replacement=createTargetRow(item,Number.parseInt(row.dataset.targetIndex,10),route.targets.length,route.strategy==='round-robin',route);
+    row.replaceWith(replacement);
+    renumberRouteCards();
+    const disclosure=replacement.querySelector('[data-action="toggle-accounts"]');
+    disclosure.setAttribute('aria-expanded','true');
+    replacement.querySelector('.target-accounts').hidden=false;
+    Array.from(replacement.querySelectorAll('[data-account-id]')).find(input=>input.dataset.accountId===id)?.focus();
     refreshDirty();
     return;
   }
@@ -437,7 +424,8 @@ function updateFromInput(target){
   if(targetRow&&target.dataset.targetField){
     const targetIndex=Number.parseInt(targetRow.dataset.targetIndex,10);
     if(targetIndex>=0)route.targets[targetIndex][target.dataset.targetField]=target.value;
-    if(target.dataset.targetField==='model'&&catalogHasModel(modelsForRoute(route),target.value)){
+    if(target.dataset.targetField==='model')target.title=target.selectedOptions[0]?.textContent||'';
+    if(target.dataset.targetField==='model'&&catalogHasModel(modelsForRoute(route.targets[targetIndex]),target.value)){
       delete targetRow.dataset.modelAvailability;
       target.removeAttribute('title');
     }
@@ -459,31 +447,55 @@ routesEl.addEventListener('click',event=>{
   if(action==='up')moveRoute(index,-1,action);
   if(action==='down')moveRoute(index,1,action);
   if(action==='remove'){state.routes.splice(index,1);renderRoutes();refreshDirty()}
-  if(action==='add-target'&&state.catalogLoaded){state.routes[index].targets.push({model:'',weight:'1'});renderRoutes();refreshDirty()}
+  if(action==='add-target'&&state.catalogLoaded){state.routes[index].targets.push({model:'',weight:'1',allowed_accounts:[]});renderRoutes();refreshDirty()}
   const row=button.closest('.target-row');
   const targetIndex=row?Number.parseInt(row.dataset.targetIndex,10):-1;
+  if(action==='toggle-accounts'&&row){
+    const panel=row.querySelector('.target-accounts');
+    panel.hidden=!panel.hidden;
+    button.setAttribute('aria-expanded',String(!panel.hidden));
+  }
   if(action==='target-up'&&targetIndex>=0)moveTarget(index,targetIndex,-1,action);
   if(action==='target-down'&&targetIndex>=0)moveTarget(index,targetIndex,1,action);
   if(action==='remove-target'&&targetIndex>=0){state.routes[index].targets.splice(targetIndex,1);renderRoutes();refreshDirty()}
 });
+let draggedTarget=null;
+routesEl.addEventListener('dragstart',event=>{
+  const handle=event.target.closest('[data-target-drag]');
+  const row=handle&&handle.closest('.target-row');
+  if(!row){event.preventDefault();return}
+  draggedTarget={routeIndex:routeIndexFrom(row),targetIndex:Number.parseInt(row.dataset.targetIndex,10)};
+  event.dataTransfer.effectAllowed='move';
+  event.dataTransfer.setData('text/plain','target');
+});
+routesEl.addEventListener('dragover',event=>{
+  const row=event.target.closest('.target-row');
+  if(draggedTarget&&row&&routeIndexFrom(row)===draggedTarget.routeIndex){event.preventDefault();event.dataTransfer.dropEffect='move'}
+});
+routesEl.addEventListener('drop',event=>{
+  const row=event.target.closest('.target-row');
+  if(!draggedTarget||!row||routeIndexFrom(row)!==draggedTarget.routeIndex)return;
+  event.preventDefault();
+  moveTarget(draggedTarget.routeIndex,draggedTarget.targetIndex,Number.parseInt(row.dataset.targetIndex,10)-draggedTarget.targetIndex);
+  draggedTarget=null;
+});
+routesEl.addEventListener('dragend',()=>{draggedTarget=null});
 function serializeRoutesFromState(){return serializeRoutes(state.routes)}
 function validateClient(routes){
   const errors=validateRoutes(routes);
-  routes.forEach((route,index)=>{
-    const label='Route '+(index+1);
-    if(!route.allowed_accounts?.length)return;
-    if(!state.catalogLoaded){errors.push(label+': account catalog is unavailable; reload before saving.');return}
+  routes.forEach((route,index)=>route.targets.forEach((target,targetIndex)=>{
+    if(!Array.isArray(target.allowed_accounts)||!target.allowed_accounts.length)return;
+    const path='routes['+index+'].targets['+targetIndex+'].allowed_accounts';
+    if(!state.catalogLoaded){errors.push(path+': account catalog is unavailable; reload before saving.');return}
     const accounts=new Map((state.accounts||[]).map(account=>[account.id,account]));
-    route.allowed_accounts.forEach(id=>{
-      const account=accounts.get(id);
-      if(!account||account.disabled)errors.push(label+': remove unavailable account '+id+'.');
-      else if(!route.targets.some(target=>catalogHasModel(new Set(account.models.map(model=>model.id)),target.model)))errors.push(label+': account '+id+' does not support any route target.');
+    target.allowed_accounts.forEach((id,accountIndex)=>{
+      if(typeof id!=='string'||!id.trim())return;
+      const account=accounts.get(id.trim());
+      const field=path+'['+accountIndex+']';
+      if(!account||account.disabled)errors.push(field+': remove unavailable account '+id+'.');
+      else if(target.model&&!account.model_support_unknown&&!catalogHasModel(new Set(account.models.map(model=>model.id)),target.model))errors.push(field+': account '+id+' does not support this target.');
     });
-    const available=modelsForRoute(route);
-    route.targets.forEach((target,targetIndex)=>{
-      if(target.model&&!catalogHasModel(available,target.model))errors.push(label+', target '+(targetIndex+1)+': model is not available from the selected accounts.');
-    });
-  });
+  }));
   if(!/^-?\d+$/.test(state.priority.trim()))errors.push('Priority must be an integer.');
   return errors.concat(validateFallback(state.fallback));
 }

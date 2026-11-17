@@ -69,6 +69,14 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 	if err != nil {
 		return err
 	}
+	accounts, unavailable, skips, retryAfter, allCooling := p.runtime.Preflight(route, accounts, unavailable)
+	identity := p.resolveCorrelation(request.Headers)
+	for _, skip := range skips {
+		p.recordRoutingSkip(identity, skip)
+	}
+	if allCooling {
+		return cooldownRouteError(route, retryAfter)
+	}
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
 	for key := range unavailable {
@@ -89,14 +97,19 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
 		candidates := accounts[routeKey(selection.model)]
-		if len(route.AllowedAccounts) == 0 {
-			candidates = []accountCredential{{}}
-		}
-		for index, account := range candidates {
-			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
+		for _, account := range candidates {
+			ordinal := p.nextCorrelationAttempt(identity)
+			if ordinal < 0 {
+				ordinal = attempt
+			}
+			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
 			receivedPayload, err := forwardStreamAttempt(ctx, request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload, account)
 			if err == nil {
-				p.runtime.MarkSuccess(route, selection.model)
+				if account.ID == "" {
+					p.runtime.MarkSuccess(route, selection.model)
+				} else {
+					p.runtime.MarkAccountSuccess(route, selection.model, account.ID)
+				}
 				return nil
 			}
 			if cancelled := ctx.Err(); cancelled != nil {
@@ -106,8 +119,14 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 			if account.ID != "" {
 				err = safeRestrictedFailure(err)
 			}
-			if retry && (len(route.AllowedAccounts) == 0 || (!receivedPayload && index == len(candidates)-1)) {
-				p.runtime.MarkFailure(route, selection.model)
+			if retry {
+				if account.ID == "" {
+					p.runtime.MarkFailure(route, selection.model)
+				} else if receivedPayload {
+					p.runtime.RecordFailure(route, selection.model)
+				} else {
+					p.runtime.MarkAccountFailure(route, selection.model, account.ID)
+				}
 			}
 			if receivedPayload || !retry || p.config.FallbackDisabled {
 				return err

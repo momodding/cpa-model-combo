@@ -51,7 +51,9 @@ func TestDecodeRouterConfigCanonicalAndLegacyKeys(t *testing.T) {
 			if test.name == "canonical" {
 				wantTargets[0].Weight = 3
 			}
-			if !slices.Equal(route.Targets, wantTargets) {
+			if !slices.EqualFunc(route.Targets, wantTargets, func(a, b modelTarget) bool {
+				return a.Model == b.Model && a.Weight == b.Weight && slices.Equal(a.AllowedAccounts, b.AllowedAccounts)
+			}) {
 				t.Fatalf("targets = %#v", route.Targets)
 			}
 		})
@@ -507,23 +509,52 @@ routes:
 }
 
 func TestAllowedAccountsConfiguration(t *testing.T) {
-	config, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    models: [model-a]\n    allowed_accounts: [' b ', A, a]\n"))
+	raw := `routes:
+  - alias: smart
+    allowed_accounts: [' b ', A, a]
+    targets:
+      - model: inherited
+      - model: unrestricted
+        allowed_accounts: []
+      - model: overridden
+        allowed_accounts: [' c ', d]
+  - alias: legacy
+    models: [old-a, old-b]
+    allowed_accounts: [legacy-account]
+`
+	config, err := decodeRouterConfig([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	route := config.Routes[0]
-	if !slices.Equal(route.AllowedAccounts, []string{"b", "A", "a"}) {
-		t.Fatalf("accounts = %#v", route.AllowedAccounts)
+	for index, want := range [][]string{{"b", "A", "a"}, {}, {"c", "d"}} {
+		if !slices.Equal(route.Targets[index].AllowedAccounts, want) {
+			t.Fatalf("target %d accounts = %#v, want %#v", index, route.Targets[index].AllowedAccounts, want)
+		}
+	}
+	for _, target := range config.Routes[1].Targets {
+		if !slices.Equal(target.AllowedAccounts, []string{"legacy-account"}) {
+			t.Fatalf("legacy target accounts = %#v", target.AllowedAccounts)
+		}
+	}
+	config.Routes[1].Targets[0].AllowedAccounts[0] = "changed"
+	if config.Routes[1].Targets[1].AllowedAccounts[0] != "legacy-account" {
+		t.Fatal("legacy targets share inherited account slices")
 	}
 	signature := routeSignature(route)
-	route.AllowedAccounts = []string{"A", "b", "a"}
+	route.Targets[0].AllowedAccounts = []string{"A", "b", "a"}
 	if routeSignature(route) == signature {
 		t.Fatal("account order must change route signature")
 	}
-	for _, list := range []string{"[' ']", "[a, ' a ']", "[123]", "[true]", "[null]", "not-an-array"} {
-		_, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    models: [model-a]\n    allowed_accounts: " + list + "\n"))
-		if err == nil || !strings.Contains(err.Error(), "allowed_accounts") {
-			t.Fatalf("%s: expected allowed_accounts error, got %v", list, err)
+	for _, list := range []string{"[' ']", "[a, ' a ']", "[123]", "[true]", "[null]", "not-an-array", "null"} {
+		for _, input := range []string{
+			"routes:\n  - alias: smart\n    models: [model-a]\n    allowed_accounts: " + list + "\n",
+			"routes:\n  - alias: smart\n    targets:\n      - model: model-a\n        allowed_accounts: " + list + "\n",
+		} {
+			_, err := decodeRouterConfig([]byte(input))
+			if err == nil || !strings.Contains(err.Error(), "allowed_accounts") {
+				t.Fatalf("%s: expected allowed_accounts error, got %v", list, err)
+			}
 		}
 	}
 }

@@ -110,6 +110,9 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 			}
 		}
 		if selection != nil {
+			if err := scanRoutingSkips(connection, selection.addSkip); err != nil {
+				return err
+			}
 			if err := scanUsageRecords(connection, usageFilter{}, func(record storedUsageRecord) {
 				selection.add(record, estimateUsageCost(record, resolver))
 			}); err != nil {
@@ -434,6 +437,7 @@ type usageRequestCandidate struct {
 	tps                float64
 	effectiveCache     uint64
 	attempts           []usageRequestCandidate
+	skip               *storedRoutingSkip
 	warning            string
 	lifecycleRequestID string
 	outcome            string
@@ -453,18 +457,21 @@ type usageRequestSelection struct {
 	byRequest       map[string][]usageRequestCandidate
 	legacy          map[string][]usageRequestCandidate
 	sessions        map[string][]storedRequestSession
+	skips           map[requestSessionKey][]storedRoutingSkip
 	legacySessions  map[string]storedRequestSession
 	total, capacity int
 }
 
 const ambiguousTraceWarning = "trace ID is shared by several inbound requests; execution records are not assigned to a parent"
 
+type requestSessionKey struct{ traceID, lifecycleRequestID string }
+
 func newUsageRequestSelection(options usagePageOptions, filter usageFilter) *usageRequestSelection {
 	capacity := int(^uint(0) >> 1)
 	if options.Offset <= capacity-options.Limit {
 		capacity = options.Offset + options.Limit
 	}
-	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, traces: make(map[string][]usageRequestCandidate), byRequest: make(map[string][]usageRequestCandidate), legacy: make(map[string][]usageRequestCandidate), sessions: make(map[string][]storedRequestSession), legacySessions: make(map[string]storedRequestSession)}
+	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, traces: make(map[string][]usageRequestCandidate), byRequest: make(map[string][]usageRequestCandidate), legacy: make(map[string][]usageRequestCandidate), sessions: make(map[string][]storedRequestSession), legacySessions: make(map[string]storedRequestSession), skips: make(map[requestSessionKey][]storedRoutingSkip)}
 }
 
 func (selection *usageRequestSelection) better(left, right usageRequestCandidate) bool {
@@ -531,6 +538,28 @@ func (selection *usageRequestSelection) addSession(session storedRequestSession)
 	}
 }
 
+func (selection *usageRequestSelection) addSkip(skip storedRoutingSkip) {
+	key := requestSessionKey{skip.TraceID, skip.LifecycleRequestID}
+	selection.skips[key] = append(selection.skips[key], skip)
+}
+
+func (selection *usageRequestSelection) attachSkips(parent usageRequestCandidate, session storedRequestSession) usageRequestCandidate {
+	skips := selection.skips[requestSessionKey{session.TraceID, session.LifecycleRequestID}]
+	if len(skips) == 0 {
+		return parent
+	}
+	for _, skip := range skips {
+		skip := skip
+		parent.attempts = append(parent.attempts, usageRequestCandidate{storedUsageRecord: storedUsageRecord{
+			TraceID: skip.TraceID, RequestedAt: skip.RequestedAt, ProviderModel: skip.Model, AuthID: skip.CredentialID, CredentialLabel: skip.CredentialLabel,
+		}, skip: &skip})
+	}
+	sort.SliceStable(parent.attempts, func(i, j int) bool {
+		return parent.attempts[i].RequestedAt.Before(parent.attempts[j].RequestedAt)
+	})
+	return parent
+}
+
 func (selection *usageRequestSelection) addLogical(candidate usageRequestCandidate) {
 	if !selection.matchesLogical(candidate) {
 		return
@@ -587,12 +616,12 @@ func (selection *usageRequestSelection) finish(revision uint64, now time.Time) u
 		children := selection.traces[trace]
 		delete(selection.traces, trace)
 		if len(sessions) == 1 {
-			selection.addLogical(requestParent(trace, &sessions[0], children))
+			selection.addLogical(selection.attachSkips(requestParent(trace, &sessions[0], children), sessions[0]))
 			continue
 		}
 		// A short trace collision must not assign executions to an arbitrary inbound request.
 		for i := range sessions {
-			parent := requestParent(trace, &sessions[i], nil)
+			parent := selection.attachSkips(requestParent(trace, &sessions[i], nil), sessions[i])
 			parent.warning = ambiguousTraceWarning
 			selection.addLogical(parent)
 		}
@@ -639,6 +668,15 @@ func (selection *usageRequestSelection) finish(revision uint64, now time.Time) u
 }
 
 func (candidate usageRequestCandidate) detail() usageRequestDetail {
+	if candidate.skip != nil {
+		dispatched := false
+		skip := candidate.skip
+		detail := usageRequestDetail{storedUsageRecord: candidate.storedUsageRecord, LifecycleRequestID: skip.LifecycleRequestID, Result: "cooling_down", Status: "cooling_down", Dispatched: &dispatched, Order: skip.Attempt + 1}
+		if !skip.RetryAt.IsZero() {
+			detail.RetryAt = &skip.RetryAt
+		}
+		return detail
+	}
 	detail := requestDetailWithCost(candidate.storedUsageRecord, candidate.cost)
 	detail.Result, detail.CorrelationWarning = candidateResult(candidate), candidate.warning
 	detail.LifecycleRequestID, detail.Outcome, detail.RequestedModel, detail.Stream = candidate.lifecycleRequestID, candidate.outcome, candidate.requestedModel, candidate.stream

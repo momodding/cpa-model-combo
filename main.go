@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -107,8 +108,9 @@ func (p *modelRouterPlugin) HttpRequest(_ context.Context, _ pluginapi.ExecutorH
 }
 
 func (p *modelRouterPlugin) InterceptRequestBeforeAuth(_ context.Context, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+	response := pluginapi.RequestInterceptResponse{ClearHeaders: []string{correlationHeader}}
 	if p == nil || !p.config.Enabled {
-		return pluginapi.RequestInterceptResponse{}, nil
+		return response, nil
 	}
 	requested := firstNonEmpty(strings.TrimSpace(request.RequestedModel), strings.TrimSpace(request.Model))
 	route, routed := p.matchingRoute(requested)
@@ -125,7 +127,16 @@ func (p *modelRouterPlugin) InterceptRequestBeforeAuth(_ context.Context, reques
 	if !routed && p.attribution != nil {
 		p.attribution.MarkDirectRequest(request)
 	}
-	return pluginapi.RequestInterceptResponse{}, nil
+	if routed && p.attribution != nil && strings.TrimSpace(request.RequestID) != "" && strings.TrimSpace(request.TraceID) != "" {
+		token, err := p.attribution.issueCorrelation(strings.TrimSpace(request.TraceID), strings.TrimSpace(request.RequestID))
+		if err != nil {
+			return response, err
+		}
+		if token != "" {
+			response.Headers = http.Header{correlationHeader: {token}}
+		}
+	}
+	return response, nil
 }
 
 func (p *modelRouterPlugin) InterceptRequestAfterAuth(_ context.Context, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
@@ -136,6 +147,9 @@ func (p *modelRouterPlugin) InterceptRequestAfterAuth(_ context.Context, request
 }
 
 func (p *modelRouterPlugin) HandleRequestComplete(_ context.Context, completion pluginapi.RequestCompletion) error {
+	if p != nil && p.attribution != nil && strings.TrimSpace(completion.RequestID) != "" {
+		p.attribution.completeCorrelation(strings.TrimSpace(completion.TraceID), strings.TrimSpace(completion.RequestID))
+	}
 	if p == nil || p.store == nil || strings.TrimSpace(completion.RequestID) == "" {
 		return nil
 	}
