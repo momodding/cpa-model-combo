@@ -171,6 +171,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await column.uncheck();
     assert.equal(await page.locator(`#group-table th[data-column="${columnKey}"]`).count(), 0);
     await page.locator(`#group-column-options input[data-column-kind="group"][data-column-key="${columnKey}"]`).check();
+    await page.locator('#group-columns summary').click();
 
     const tokenLegend = page.locator('[data-token-series="input"]');
     await tokenLegend.click();
