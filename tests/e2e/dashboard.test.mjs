@@ -130,7 +130,11 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('.route-card').last().locator('button[data-action="remove"]').click();
     assert.deepEqual(await routeAliases(page), beforeAliases);
     await page.locator('#save').click();
-    await page.waitForFunction(() => document.querySelector('#save-state')?.textContent === 'Saved in CPA', { timeout: 20_000 });
+    try {
+      await page.waitForFunction(() => document.querySelector('#save-state')?.textContent === 'Saved in CPA', null, { timeout: 20_000 });
+    } catch (error) {
+      throw new Error(`Save did not complete: state=${await page.locator('#save-state').textContent()}, toast=${await page.locator('#toast').textContent()}, pageErrors=${JSON.stringify(pageErrors)}, failedResponses=${JSON.stringify(failedApiResponses)}`, { cause: error });
+    }
 
     await page.getByRole('tab', { name: 'Usage tracking' }).click();
     await page.locator('#usage-panel').waitFor({ state: 'visible' });
@@ -210,7 +214,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     const requestPage = {
       schema_version: 2, generated_at: new Date().toISOString(), price_book_revision: 0, total: 4, offset: 0, limit: 50,
       items: [
-        { sequence: 101, request_id: '1234', request_endpoint: 'POST /v1/chat/completions', requested_model: 'route-a', requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 3000000000, attempts: [
+        { sequence: 101, router_request_id: 'legacy-first', request_id: '1234', request_endpoint: 'POST /v1/chat/completions', requested_model: 'route-a', requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 3000000000, attempts: [
           { requested_at: '2026-01-01T00:00:00Z', router_model: 'route-a', provider_model: 'provider-a', result: 'http_429', latency_ns: 1000000000 },
           { requested_at: '2026-01-01T00:00:01Z', router_model: 'route-a', provider_model: 'provider-b', result: 'success', latency_ns: 2000000000 },
         ] },
@@ -227,7 +231,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.route('**/usage/requests?**', requestRoute);
     await page.locator('#request-page-size').selectOption('50');
     await waitForUsageReady(page);
-    const toggle = page.getByRole('button', { name: 'Expand provider attempts for request 1234' });
+    const toggle = page.getByRole('button', { name: 'Expand 2 executions for request', exact: true }).first();
     assert.deepEqual(await page.locator('#request-headers th').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['Request ID', 'API path', 'Requested model']);
     assert.equal(await page.locator('#usage-requests > tr').count(), 8);
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 4);
@@ -236,39 +240,38 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     const controls = (await toggle.getAttribute('aria-controls')).split(' ');
     assert.equal(controls.length, 2);
     assert.deepEqual(await Promise.all(controls.map((id) => page.locator('#' + id).count())), [1, 1]);
-    assert.equal(await page.getByRole('button', { name: 'Expand provider attempts for request 5678' }).count(), 1, 'direct request with one provider child is expandable');
+    assert.equal(await page.getByRole('button', { name: 'Expand 1 executions for request', exact: true }).count(), 2, 'direct and legacy grouped requests are expandable');
     assert.equal(await page.locator('.request-parent-row').nth(2).locator('button').count(), 0, 'legacy standalone row has no children to expand');
-    assert.equal(await page.getByRole('button', { name: 'Expand provider attempts for request sequence 104' }).count(), 1, 'legacy grouped request uses sequence fallback');
-    assert.deepEqual(await page.locator('.request-parent-row').first().locator('td').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['›1234', 'POST /v1/chat/completions', 'route-a']);
+    assert.deepEqual(await page.locator('.request-parent-row').first().locator('td').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['›1234 2 executions', 'POST /v1/chat/completions', 'route-a']);
     await toggle.click();
-    const expandedToggle = page.getByRole('button', { name: 'Collapse provider attempts for request 1234' });
+    const expandedToggle = page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true });
     assert.equal(await expandedToggle.getAttribute('aria-expanded'), 'true');
     assert.equal(await expandedToggle.evaluate((element) => element === document.activeElement), true, 'toggle keeps focus after rerender');
     assert.equal(await page.locator('#' + controls[0]).isVisible(), true);
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
-    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('td:nth-child(1)').allTextContents(), ['Attempt 1', 'Attempt 2']);
+    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('.request-ordinal').allTextContents(), ['Execution 1', 'Execution 2']);
     assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('td:nth-child(6)').allTextContents(), ['provider-a', 'provider-b']);
-    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('.status-pill').allTextContents(), ['HTTP 429', 'Success']);
+    assert.deepEqual(await page.locator('#' + controls.join(', #')).locator('.status-pill').allTextContents(), ['Failed · HTTP 429', 'Success']);
     assert.equal(await page.locator('.request-parent-row').first().locator('.status-pill').textContent(), 'Success');
     assert.equal(requestCalls, 1, 'tree toggle should not refetch requests');
     requestPage.items[0].sequence = 999;
     await page.locator('#usage-refresh').click();
     await waitForUsageReady(page);
     assert.equal(requestCalls, 2);
-    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true', 'expansion persists across refresh');
+    assert.equal(await page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true }).getAttribute('aria-expanded'), 'true', 'expansion persists across refresh');
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
     await page.locator('#request-columns summary').click();
     const requestOption = (key) => page.locator(`#request-column-options input[data-column-key="${key}"]`);
     await requestOption('request_id').uncheck();
     assert.equal(await page.locator('#request-headers th[data-column="request_id"]').count(), 0);
-    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›POST /v1/chat/completions');
-    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).getAttribute('aria-expanded'), 'true');
-    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Attempt 1\s+—$/);
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›POST /v1/chat/completions 2 executions');
+    assert.equal(await page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true }).getAttribute('aria-expanded'), 'true');
+    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Execution 1POST \/v1\/chat\/completions$/);
     const savedPreferences = page.waitForResponse((response) => response.url().includes('/usage/preferences') && response.request().method() === 'PUT' && response.ok() && JSON.parse(response.request().postData()).hidden_request_columns.includes('request_endpoint'));
     await requestOption('request_endpoint').uncheck();
     assert.equal(await page.locator('#request-headers th[data-column="request_endpoint"]').count(), 0);
-    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›route-a');
-    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Attempt 1\s+—$/);
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›route-a 2 executions');
+    assert.match(await page.locator('#' + controls[0]).locator('td').first().textContent(), /^Execution 1route-a$/);
     await savedPreferences;
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('#workspace').waitFor({ state: 'visible' });
@@ -281,27 +284,27 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await waitForUsageReady(page);
     await page.locator('#request-page-size').selectOption('50');
     await waitForUsageReady(page);
-    await page.getByRole('button', { name: 'Expand provider attempts for request 1234' }).click();
-    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).evaluate((element) => element === document.activeElement), true);
-    assert.match(await page.locator('.request-attempt-row').first().locator('td').first().textContent(), /^Attempt 1\s+—$/);
-    await page.getByRole('button', { name: 'Expand provider attempts for request sequence 104' }).click();
-    assert.equal(await page.getByRole('button', { name: 'Collapse provider attempts for request sequence 104' }).getAttribute('aria-expanded'), 'true');
+    await page.getByRole('button', { name: 'Expand 2 executions for request', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true }).evaluate((element) => element === document.activeElement), true);
+    assert.match(await page.locator('.request-attempt-row').first().locator('td').first().textContent(), /^Execution 1route-a$/);
+    await page.locator('.request-parent-row').nth(3).locator('button[data-request-toggle]').click();
+    assert.equal(await page.locator('.request-parent-row').nth(3).locator('button[data-request-toggle]').getAttribute('aria-expanded'), 'true');
     const checkedKeys = await page.locator('#request-column-options input:checked').evaluateAll((inputs) => inputs.map((input) => input.dataset.columnKey));
     if (!(await requestOption('result').isChecked())) await requestOption('result').check();
     for (const key of checkedKeys.filter((key) => key !== 'result')) await requestOption(key).uncheck();
     assert.equal(await requestOption('result').isDisabled(), true, 'last visible column cannot be hidden');
     assert.equal(await page.locator('#request-headers th').count(), 1);
     assert.equal(await page.locator('.request-parent-row').first().locator('.status-pill').textContent(), 'Success');
-    assert.equal(await page.locator('.request-attempt-row').first().locator('.status-pill').textContent(), 'HTTP 429');
-    assert.match(await page.locator('.request-attempt-row').first().locator('td').textContent(), /^Attempt 1\s+HTTP 429$/);
-    await page.getByRole('button', { name: 'Collapse provider attempts for request 1234' }).click();
-    await page.getByRole('button', { name: 'Expand provider attempts for request 1234' }).click();
+    assert.equal(await page.locator('.request-attempt-row').first().locator('.status-pill').textContent(), 'Failed · HTTP 429');
+    assert.match(await page.locator('.request-attempt-row').first().locator('td').textContent(), /^Execution 1Failed · HTTP 429$/);
+    await page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true }).click();
+    await page.getByRole('button', { name: 'Expand 2 executions for request', exact: true }).click();
     assert.equal(await page.locator('.request-attempt-row').first().isVisible(), true);
     for (const key of checkedKeys) if (!(await requestOption(key).isChecked())) await requestOption(key).check();
     if (!checkedKeys.includes('result')) await requestOption('result').uncheck();
     await requestOption('request_id').check();
     await requestOption('request_endpoint').check();
-    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›1234');
+    assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›1234 2 executions');
     await page.unroute('**/usage/requests?**', requestRoute);
 
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -463,12 +466,12 @@ test('request details render one expandable parent per trace with ordered execut
     assert.equal(await children.nth(2).isVisible(), false, 'other traces stay collapsed');
     const failed = await cells(children.nth(0));
     const succeeded = await cells(children.nth(1));
-    assert.match(failed.time, /^Execution 1/);
+    assert.equal(await children.nth(0).locator('.request-ordinal').textContent(), 'Execution 1');
     assert.equal(failed.provider_model, 'gpt-a');
     assert.equal(failed.credential, 'Work account');
     assert.equal(failed.request_endpoint, '/v1/chat/completions');
     assert.match(failed.result, /HTTP 429/);
-    assert.match(succeeded.time, /^Execution 2/);
+    assert.equal(await children.nth(1).locator('.request-ordinal').textContent(), 'Execution 2');
     assert.equal(succeeded.credential, 'Unavailable');
     assert.doesNotMatch(await page.locator('#usage-requests').textContent(), /raw-credential-id-must-stay-hidden/);
 

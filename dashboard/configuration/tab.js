@@ -471,7 +471,7 @@ function validateClient(routes){
   const errors=validateRoutes(routes);
   routes.forEach((route,index)=>{
     const label='Route '+(index+1);
-    if(!route.allowed_accounts.length)return;
+    if(!route.allowed_accounts?.length)return;
     if(!state.catalogLoaded){errors.push(label+': account catalog is unavailable; reload before saving.');return}
     const accounts=new Map((state.accounts||[]).map(account=>[account.id,account]));
     route.allowed_accounts.forEach(id=>{
