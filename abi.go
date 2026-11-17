@@ -63,8 +63,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type abiEnvelope struct {
@@ -207,7 +207,14 @@ func handleModelRouterABIMethod(ctx context.Context, method string, request []by
 		}
 		path := strings.TrimRight(strings.TrimSpace(rpcRequest.Path), "/")
 		if !strings.HasPrefix(path, modelRouterUsageBasePath+"/") {
-			return okEnvelope(handleModelRouterManagement(nil, rpcRequest.ManagementRequest))
+			// Dashboard, validation and catalog work before registration; they use the plugin when it is live.
+			plugin, _, done, err := beginModelRouterCall()
+			if err == nil {
+				defer done()
+			} else {
+				plugin = nil
+			}
+			return okEnvelope(handleModelRouterManagementWithHost(plugin, rpcRequest.ManagementRequest, callbackModelHost{hostCallbackID: rpcRequest.HostCallbackID}))
 		}
 	}
 	plugin, metadata, done, err := beginModelRouterCall()
@@ -268,6 +275,12 @@ func handleModelRouterABIMethod(ctx context.Context, method string, request []by
 			response, err = plugin.InterceptRequestAfterAuth(ctx, rpcRequest)
 		}
 		return okEnvelopeWithError(response, err)
+	case pluginabi.MethodRequestComplete:
+		var completion pluginapi.RequestCompletion
+		if err := json.Unmarshal(request, &completion); err != nil {
+			return nil, fmt.Errorf("decode request.complete request: %w", err)
+		}
+		return okEnvelopeWithError(map[string]any{}, plugin.HandleRequestComplete(ctx, completion))
 	case pluginabi.MethodUsageHandle:
 		var record pluginapi.UsageRecord
 		if err := json.Unmarshal(request, &record); err != nil {
@@ -307,6 +320,9 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 	if request.SchemaVersion >= streamBodyOmissionSchemaVersion {
 		schemaVersion = streamBodyOmissionSchemaVersion
 	}
+	if request.SchemaVersion >= pluginabi.SchemaVersion {
+		schemaVersion = pluginabi.SchemaVersion
+	}
 	return okEnvelope(abiRegistration{
 		SchemaVersion: schemaVersion,
 		Metadata:      metadata,
@@ -315,7 +331,7 @@ func registerModelRouter(raw []byte) ([]byte, error) {
 			ModelRouter:           true,
 			Executor:              true,
 			RequestInterceptor:    true,
-			RequestLifecycle:      false,
+			RequestLifecycle:      true,
 			ResponseInterceptor:   false,
 			StreamInterceptor:     false,
 			UsagePlugin:           true,

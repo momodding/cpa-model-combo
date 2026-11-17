@@ -1,9 +1,8 @@
 'use strict';
 const CONFIG_API='/v0/management/plugins/model-combo/config';
 const VALIDATE_API='/v0/management/plugins/model-combo/validate';
-const API_KEYS_API='/v0/management/api-keys';
-const MODELS_API='/v1/models';
 const USAGE_API='/v0/management/plugins/model-combo/usage';
+const ACCOUNTS_API='/v0/management/plugins/model-combo/accounts';
 const ROUTER_FILTER_MODEL_PREFIX='model:';
 const ROUTER_FILTER_ATTRIBUTION_PREFIX='attribution:';
 const DEFAULT_HIDDEN_GROUP_COLUMNS=['provider','result','router_model','service_tier','source'];
@@ -24,6 +23,7 @@ const usageState={
 const requestColumns=[
   {key:'request_id',label:'Request ID',text:true},{key:'request_endpoint',label:'API path',text:true},{key:'requested_model',label:'Requested model',text:true},
   {key:'time',label:'Time',sort:'time',text:true},{key:'router_model',label:'Router model',sort:'router_model',text:true},{key:'provider_model',label:'Provider model',sort:'provider_model',text:true},
+  {key:'trace_id',label:'Trace',text:true},{key:'credential',label:'Credential',text:true},
   {key:'provider',label:'Provider',text:true},{key:'source',label:'Source',sort:'source',text:true},{key:'service_tier',label:'Service tier',sort:'service_tier',text:true},
   {key:'result',label:'Result',sort:'result',text:true},{key:'latency',label:'Latency',sort:'latency'},{key:'ttft',label:'TTFT',sort:'ttft'},{key:'tps',label:'Tokens/sec',sort:'tps'},
   {key:'input_tokens',label:'Input'},{key:'output_tokens',label:'Output'},{key:'reasoning_tokens',label:'Reasoning'},{key:'cache_read_tokens',label:'Cache read'},

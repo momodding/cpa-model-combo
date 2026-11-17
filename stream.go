@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func (p *modelRouterPlugin) startStream(request executorRPCRequest, host modelHost) ([]byte, error) {
@@ -46,7 +47,13 @@ func (p *modelRouterPlugin) startStream(request executorRPCRequest, host modelHo
 	return okEnvelope(map[string]any{"headers": http.Header{"Content-Type": []string{"text/event-stream"}}})
 }
 
-func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request pluginapi.ExecutorRequest, pluginStreamID string, host modelHost, onPayload func()) error {
+func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request pluginapi.ExecutorRequest, pluginStreamID string, host modelHost, onPayload func()) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if p == nil || host == nil {
 		return statusError{status: http.StatusBadGateway, message: "model router host callback is unavailable"}
 	}
@@ -58,10 +65,20 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	bodyInfo := bodyForExecution(request)
 	routerRequestID := rand.Text()
 	policy := p.config.fallbackPolicy()
+	accounts, unavailable, err := p.routeAccounts(route, requestedModel, host)
+	if err != nil {
+		return err
+	}
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
+	for key := range unavailable {
+		attempted[key] = struct{}{}
+	}
 	limit := p.config.attemptLimit(len(route.Targets))
 	for attempt := 0; attempt < limit; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		selection := p.runtime.SelectExcluding(route, attempted)
 		if selection.allCooling {
 			return cooldownRouteError(route, selection.retryAfter)
@@ -71,19 +88,32 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
-		receivedPayload, err := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload)
-		if err == nil {
-			p.runtime.MarkSuccess(route, selection.model)
-			return nil
+		candidates := accounts[routeKey(selection.model)]
+		if len(route.AllowedAccounts) == 0 {
+			candidates = []accountCredential{{}}
 		}
-		if eligibleRouteFailure(err, policy) {
-			p.runtime.MarkFailure(route, selection.model)
+		for index, account := range candidates {
+			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, attempt)
+			receivedPayload, err := forwardStreamAttempt(ctx, request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload, account)
+			if err == nil {
+				p.runtime.MarkSuccess(route, selection.model)
+				return nil
+			}
+			if cancelled := ctx.Err(); cancelled != nil {
+				return cancelled
+			}
+			retry := eligibleRouteFailure(err, policy)
+			if account.ID != "" {
+				err = safeRestrictedFailure(err)
+			}
+			if retry && (len(route.AllowedAccounts) == 0 || (!receivedPayload && index == len(candidates)-1)) {
+				p.runtime.MarkFailure(route, selection.model)
+			}
+			if receivedPayload || !retry || p.config.FallbackDisabled {
+				return err
+			}
+			lastErr = err
 		}
-		if receivedPayload || !eligibleRouteFailure(err, policy) || p.config.FallbackDisabled {
-			return err
-		}
-		lastErr = err
 	}
 	detail := ""
 	if lastErr != nil {
@@ -92,9 +122,20 @@ func (p *modelRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 }
 
-func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, onPayload func()) (bool, error) {
-	response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))
+func forwardStreamAttempt(ctx context.Context, request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, onPayload func(), account accountCredential) (bool, error) {
+	response, err := host.StartStream(hostRequest(request, bodyInfo, target, true, account))
+	if response.StreamID != "" {
+		closeUpstream := sync.OnceFunc(func() { _ = host.CloseStream(response.StreamID) })
+		stopCancellation := context.AfterFunc(ctx, closeUpstream)
+		defer func() { stopCancellation(); closeUpstream() }()
+	}
+	if cancelled := ctx.Err(); cancelled != nil {
+		return false, cancelled
+	}
 	if err != nil {
+		if terminalRequestError(err) {
+			return false, err
+		}
 		// StartStream may report the upstream status alongside the error. Preserve it
 		// so the failure is classified by the fallback policy instead of falling
 		// through to the ambiguous-error path.
@@ -104,17 +145,18 @@ func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionB
 		return false, err
 	}
 	if response.StatusCode >= 400 {
-		_ = host.CloseStream(response.StreamID)
 		return false, statusError{status: response.StatusCode, message: fmt.Sprintf("host model %s stream returned status %d", target, response.StatusCode)}
 	}
 	if strings.TrimSpace(response.StreamID) == "" {
 		return false, statusError{status: http.StatusBadGateway, message: "host model stream returned an empty stream id"}
 	}
-	defer func() { _ = host.CloseStream(response.StreamID) }()
 	rewriter := newStreamModelRewriter(requestedModel)
 	receivedPayload := false
 	for {
 		chunk, err := host.ReadStream(response.StreamID)
+		if cancelled := ctx.Err(); cancelled != nil {
+			return receivedPayload, cancelled
+		}
 		if err != nil {
 			return receivedPayload, err
 		}

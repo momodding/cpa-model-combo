@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestSQLiteDSNPaths(t *testing.T) {
@@ -259,7 +259,7 @@ func TestUsageStorePersistsAndResetPreservesSettings(t *testing.T) {
 	}
 }
 
-func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
+func TestUsageStoreMigratesSchemaV1ToV3(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.db")
 	database, err := sql.Open("sqlite3", sqliteDSN(path, "WAL"))
 	if err != nil {
@@ -301,7 +301,7 @@ func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT storage_schema_version, next_sequence, prices_json, preferences_json FROM store_state WHERE id = 1`).Scan(&version, &sequence, &prices, &preferences); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
+	if version != 3 || sequence != 7 || string(prices) != `{"prices":"kept"}` || string(preferences) != `{"prefs":"kept"}` {
 		t.Fatalf("migrated state = %d/%d/%s/%s", version, sequence, prices, preferences)
 	}
 	var stored []byte
@@ -312,10 +312,10 @@ func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'request_sessions_started_at'`).Scan(&indexes); err != nil || indexes != 1 {
 		t.Fatalf("request_sessions index count = %d, %v", indexes, err)
 	}
-	if err := store.RecordSession(storedRequestSession{RequestID: "1234", StartedAt: now, CompletedAt: now}); err != nil {
+	if err := store.RecordSession(storedRequestSession{TraceID: "t", LifecycleRequestID: "l", StartedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	// Reopening a v2 database must not repeat the migration.
+	// Reopening must not repeat the migration or lose sessions.
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -324,55 +324,222 @@ func TestUsageStoreMigratesSchemaV1ToV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
+	if sessions := readTestSessions(t, reopened); len(sessions) != 1 || sessions[0].TraceID != "t" {
+		t.Fatalf("sessions after reopen = %#v", sessions)
+	}
 }
 
-func TestUsageStoreRequestSessionUpsertRetentionAndReset(t *testing.T) {
+func TestUsageStoreMigratesReleasedSchemaV2(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		name := "success"
+		if corrupt {
+			name = "rollback"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "usage.db")
+			database, err := sql.Open("sqlite3", sqliteDSN(path, "WAL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+			session, err := json.Marshal(map[string]any{
+				"request_id": "legacy-id", "endpoint": "POST /v1/chat/completions", "requested_model": "auto",
+				"router_model": "auto", "attribution": attributionRouted, "stream": true, "outcome": "success",
+				"status_code": 200, "started_at": now, "completed_at": now.Add(time.Second), "latency_ns": uint64(time.Second),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := json.Marshal(storedUsageRecord{Sequence: 1, RequestID: "legacy-id", RequestedAt: now, Attribution: attributionRouted, RouterModel: "auto", ProviderModel: "legacy-model", TotalTokens: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, statement := range []string{
+				`CREATE TABLE store_state (id INTEGER PRIMARY KEY CHECK (id = 1), storage_schema_version INTEGER NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 0, last_prune_day TEXT, prices_json BLOB, preferences_json BLOB)`,
+				`CREATE TABLE requests (sequence INTEGER PRIMARY KEY, requested_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+				`CREATE INDEX requests_requested_at_sequence ON requests(requested_at_ns, sequence)`,
+				`CREATE TABLE minute_aggregates (key BLOB PRIMARY KEY, minute_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+				`CREATE INDEX minute_aggregates_minute ON minute_aggregates(minute_ns)`,
+				`CREATE TABLE request_sessions (request_id TEXT PRIMARY KEY, started_at_ns INTEGER NOT NULL, payload BLOB NOT NULL)`,
+				`CREATE INDEX request_sessions_started_at ON request_sessions(started_at_ns)`,
+				`INSERT INTO store_state(id, storage_schema_version, next_sequence) VALUES (1, 2, 1)`,
+			} {
+				if _, err := database.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := database.Exec(`INSERT INTO requests VALUES (1, ?, ?)`, now.UnixNano(), record); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`INSERT INTO request_sessions VALUES (?, ?, ?)`, "legacy-id", now.UnixNano(), session); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				if _, err := database.Exec(`INSERT INTO request_sessions VALUES (?, ?, ?)`, "broken", now.UnixNano(), []byte(`{`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := openUsageStore(path, 365)
+			if corrupt {
+				if err == nil {
+					_ = store.Close()
+					t.Fatal("migration accepted malformed session payload")
+				}
+				database, err = sql.Open("sqlite3", sqliteReadOnlyDSN(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer database.Close()
+				var version, count int
+				var saved []byte
+				if err := database.QueryRow(`SELECT storage_schema_version FROM store_state WHERE id = 1`).Scan(&version); err != nil || version != 2 {
+					t.Fatalf("version after failed migration = %d, %v", version, err)
+				}
+				if err := database.QueryRow(`SELECT COUNT(*) FROM request_sessions`).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("sessions after failed migration = %d, %v", count, err)
+				}
+				if err := database.QueryRow(`SELECT payload FROM request_sessions WHERE request_id = ?`, "legacy-id").Scan(&saved); err != nil || !bytes.Equal(saved, session) {
+					t.Fatalf("original session after failed migration = %s, %v", saved, err)
+				}
+				if err := database.QueryRow(`SELECT trace_id FROM request_sessions LIMIT 1`).Scan(new(string)); err == nil {
+					t.Fatal("failed migration left schema-3 columns behind")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(store *usageStore) {
+				t.Helper()
+				var version int
+				if err := store.db.QueryRow(`SELECT storage_schema_version FROM store_state WHERE id = 1`).Scan(&version); err != nil || version != 3 {
+					t.Fatalf("migrated version = %d, %v", version, err)
+				}
+				var traceID, lifecycleID string
+				var startedAt int64
+				var migrated []byte
+				if err := store.db.QueryRow(`SELECT trace_id, lifecycle_request_id, started_at_ns, payload FROM request_sessions`).Scan(&traceID, &lifecycleID, &startedAt, &migrated); err != nil {
+					t.Fatal(err)
+				}
+				if traceID != "legacy-id" || lifecycleID != "legacy-id" || startedAt != now.UnixNano() {
+					t.Fatalf("migrated session identity = %q/%q/%d", traceID, lifecycleID, startedAt)
+				}
+				var original, saved map[string]json.RawMessage
+				if err := json.Unmarshal(session, &original); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(migrated, &saved); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range original {
+					if !bytes.Equal(saved[key], value) {
+						t.Fatalf("migrated session field %q = %s, want %s", key, saved[key], value)
+					}
+				}
+				sessions := readTestSessions(t, store)
+				if len(sessions) != 1 || sessions[0].TraceID != "legacy-id" || sessions[0].LifecycleRequestID != "legacy-id" || sessions[0].LegacyRequestID != "legacy-id" || sessions[0].Attribution != attributionRouted {
+					t.Fatalf("migrated session = %#v", sessions)
+				}
+				page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
+				if err != nil || page.Total != 1 || len(page.Items) != 1 {
+					t.Fatalf("historical requests = %#v, %v", page, err)
+				}
+				detail := page.Items[0]
+				if detail.RequestEndpoint != "POST /v1/chat/completions" || detail.RequestedModel != "auto" || !detail.Stream || detail.StatusCode != 200 || detail.LatencyNS != uint64(time.Second) || detail.TotalTokens != 7 || len(detail.Attempts) != 1 || detail.Attempts[0].ProviderModel != "legacy-model" {
+					t.Fatalf("historical request detail = %#v", detail)
+				}
+			}
+			check(store)
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = openUsageStore(path, 365)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			check(store)
+		})
+	}
+}
+
+func readTestSessions(t *testing.T, store *usageStore) []storedRequestSession {
+	t.Helper()
+	var sessions []storedRequestSession
+	if err := store.readSnapshot(func(connection *sql.Conn, _ int) error {
+		return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return sessions
+}
+
+func TestUsageStoreRequestSessionUpsertCollisionRetentionAndReset(t *testing.T) {
 	store, err := openUsageStore(filepath.Join(t.TempDir(), "usage.db"), 30)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC().Add(-time.Minute)
-	session := storedRequestSession{
-		RequestID: "1234", Endpoint: "POST /v1/chat/completions", RequestedModel: "auto", RouterModel: "auto", Attribution: attributionRouted,
-		Stream: true, Outcome: "failure", StatusCode: 502, StartedAt: now, CompletedAt: now.Add(time.Second), LatencyNS: uint64(time.Second),
+	start := storedRequestSession{TraceID: "1234", LifecycleRequestID: "a", RequestEndpoint: "POST /v1/chat/completions", RequestedModel: "auto", RouterModel: "auto", Stream: true, StartedAt: now}
+	done := storedRequestSession{TraceID: "1234", LifecycleRequestID: "a", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), Outcome: "success", HTTPStatus: 200, Latency: time.Second}
+	// Completion first, then a late start must not erase it.
+	if found, err := store.CompleteSession(done); err != nil || found {
+		t.Fatalf("CompleteSession without start = %v, %v", found, err)
 	}
-	if err := store.RecordSession(session); err != nil {
+	if sessions := readTestSessions(t, store); len(sessions) != 0 {
+		t.Fatalf("completion-only inserted %#v", sessions)
+	}
+	if err := store.RecordSession(done); err != nil {
 		t.Fatal(err)
 	}
-	session.Outcome, session.StatusCode = "success", 200
-	if err := store.RecordSession(session); err != nil {
+	if err := store.RecordSession(start); err != nil {
 		t.Fatal(err)
 	}
-	old := session
-	old.RequestID = "old"
+	// Same trace, different lifecycle ID, is a distinct session.
+	other := start
+	other.LifecycleRequestID = "b"
+	if err := store.RecordSession(other); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.CompleteSession(storedRequestSession{TraceID: "1234", LifecycleRequestID: "b", CompletedAt: now, Outcome: "failure", HTTPStatus: 502}); err != nil || !found {
+		t.Fatalf("CompleteSession existing = %v, %v", found, err)
+	}
+	old := start
+	old.LifecycleRequestID = "old"
 	old.StartedAt = now.AddDate(0, 0, -31)
 	if err := store.RecordSession(old); err != nil {
 		t.Fatal(err)
 	}
-	read := func() []storedRequestSession {
-		var sessions []storedRequestSession
-		if err := store.readSnapshot(func(connection *sql.Conn, _ int) error {
-			return scanRequestSessions(connection, func(session storedRequestSession) { sessions = append(sessions, session) })
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return sessions
+	// Write-time pruning runs once per day, so the expired session remains until forced retention.
+	sessions := readTestSessions(t, store)
+	if len(sessions) != 3 {
+		t.Fatalf("sessions after upserts = %#v", sessions)
 	}
-	// Write-time pruning runs once per day, so the expired session is still present until forced retention.
-	if sessions := read(); len(sessions) != 2 || sessions[1].RequestID != "1234" || sessions[1].Outcome != "success" || sessions[1].StatusCode != 200 || !sessions[1].StartedAt.Equal(now) {
-		t.Fatalf("sessions after upsert = %#v", sessions)
+	a, b := sessions[1], sessions[2]
+	if a.LifecycleRequestID != "b" {
+		a, b = b, a
+	}
+	if a.LifecycleRequestID != "b" || a.Outcome != "failure" || a.HTTPStatus != 502 || a.RequestedModel != "auto" || !a.Stream {
+		t.Fatalf("session b = %#v", a)
+	}
+	if b.LifecycleRequestID != "a" || b.Outcome != "success" || b.HTTPStatus != 200 || b.Latency != time.Second || b.CompletedAt.IsZero() ||
+		b.RequestEndpoint != start.RequestEndpoint || !b.StartedAt.Equal(now) {
+		t.Fatalf("session a = %#v", b)
 	}
 	if err := pruneSQLiteDatabase(store.db, 30, time.Now().UTC(), true); err != nil {
 		t.Fatal(err)
 	}
-	if sessions := read(); len(sessions) != 1 || sessions[0].RequestID != "1234" {
+	if sessions := readTestSessions(t, store); len(sessions) != 2 {
 		t.Fatalf("sessions after forced retention = %#v", sessions)
 	}
 	if err := store.ResetUsage(); err != nil {
 		t.Fatal(err)
 	}
-	if sessions := read(); len(sessions) != 0 {
+	if sessions := readTestSessions(t, store); len(sessions) != 0 {
 		t.Fatalf("sessions after reset = %#v", sessions)
 	}
 }
@@ -1804,7 +1971,7 @@ func TestUsageRequestsExactRequestParents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	session := storedRequestSession{RequestID: "1234", Endpoint: "/v1/chat/completions", RequestedModel: "smart", RouterModel: "smart", Attribution: attributionRouted, Stream: true, Outcome: string(pluginapi.RequestCompletionSucceeded), StatusCode: 200, StartedAt: start, LatencyNS: uint64(3 * time.Second)}
+	session := storedRequestSession{TraceID: "1234", LifecycleRequestID: "1234", LegacyRequestID: "1234", RequestEndpoint: "/v1/chat/completions", RequestedModel: "smart", RouterModel: "smart", Attribution: attributionRouted, Stream: true, Outcome: string(pluginapi.RequestCompletionSucceeded), HTTPStatus: 200, StartedAt: start, Latency: 3 * time.Second}
 	if err := store.RecordSession(session); err != nil {
 		t.Fatal(err)
 	}
@@ -1845,7 +2012,7 @@ func TestUsageRequestsSessionAndEarlyUsage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.RecordSession(storedRequestSession{RequestID: "empty", Endpoint: "/route", RequestedModel: "smart", Attribution: attributionRouted, RouterModel: "smart", Outcome: string(pluginapi.RequestCompletionRejected), StatusCode: 429, StartedAt: start}); err != nil {
+	if err := store.RecordSession(storedRequestSession{TraceID: "empty", LifecycleRequestID: "empty", LegacyRequestID: "empty", RequestEndpoint: "/route", RequestedModel: "smart", Attribution: attributionRouted, RouterModel: "smart", Outcome: string(pluginapi.RequestCompletionRejected), HTTPStatus: 429, StartedAt: start}); err != nil {
 		t.Fatal(err)
 	}
 	page, err := store.Requests(usageFilter{}, "time", "asc", 0, 10)
@@ -1868,7 +2035,7 @@ func TestUsageRequestsSessionAndEarlyUsage(t *testing.T) {
 	if err != nil || filtered.Total != 2 || len(filtered.Items) != 1 || filtered.Items[0].RequestID == "empty" {
 		t.Fatalf("filtered page = %#v, %v", filtered, err)
 	}
-	if err := store.RecordSession(storedRequestSession{RequestID: "early-a", Endpoint: "/same", RequestedModel: "original", Attribution: attributionDirect, Outcome: string(pluginapi.RequestCompletionSucceeded), StatusCode: 200, StartedAt: start}); err != nil {
+	if err := store.RecordSession(storedRequestSession{TraceID: "early-a", LifecycleRequestID: "early-a", LegacyRequestID: "early-a", RequestEndpoint: "/same", RequestedModel: "original", Attribution: attributionDirect, Outcome: string(pluginapi.RequestCompletionSucceeded), HTTPStatus: 200, StartedAt: start}); err != nil {
 		t.Fatal(err)
 	}
 	completed, err := store.Requests(usageFilter{ProviderModel: "same"}, "time", "asc", 0, 10)

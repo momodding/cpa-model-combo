@@ -10,6 +10,7 @@ const source = readFileSync(join(here, '../../dashboard/configuration/routes.js'
 
 const { normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody } = vm.runInNewContext(
   `${source}\n({ normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody })`,
+  { DEFAULT_FALLBACK_ON_STATUS: '401, 402, 403, 404, 408, 429, 500, 502, 503, 504' },
 );
 
 const targets = [{ model: 'gpt-a', weight: 2 }];
@@ -104,6 +105,7 @@ test('GET config -> unedited save builds exact PATCH payload', () => {
       { alias: 'rand', strategy: 'random', cooldown_seconds: 30, targets: [{ model: 'm-a', weight: 1 }] },
       { alias: 'lkg', strategy: 'last_known_good', cooldown_seconds: 60, targets: [{ model: 'm-b', weight: 2 }], success_rate_threshold: 0.75, minimum_samples: 5, observation_window_minutes: 15 },
     ],
+    fallback: { enabled: true, fallback_on_status: [401, 402, 403, 404, 408, 429, 500, 502, 503, 504], no_fallback_on_status: [], retry_codes: [], no_retry_codes: [], max_attempts: 0, stream_fallback_before_payload: true },
     'model-routes': null,
   });
   assert.deepEqual([...validateRoutes(body.routes)], []);
@@ -130,4 +132,11 @@ test('toggling enabled changes only the enabled field of the PATCH body', () => 
   assert.equal(after.routes[0].minimum_samples, 10);
   assert.equal(after.routes[0].observation_window_minutes, 30);
   assert.equal(after['model-routes'], null);
+});
+
+test('allowed accounts retain priority and clearing removes restrictions', () => {
+  const route = normalizeRoute({ alias: 'r', targets, allowed_accounts: ['second', 'first'] }, 0);
+  assert.deepEqual(Array.from(serializeRoutes([route])[0].allowed_accounts), ['second', 'first']);
+  route.allowed_accounts = [];
+  assert.equal('allowed_accounts' in serializeRoutes([route])[0], false);
 });

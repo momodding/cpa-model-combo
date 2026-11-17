@@ -505,3 +505,25 @@ routes:
 		t.Fatal("no_retry_codes must take precedence and match case-insensitively")
 	}
 }
+
+func TestAllowedAccountsConfiguration(t *testing.T) {
+	config, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    models: [model-a]\n    allowed_accounts: [' b ', A, a]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := config.Routes[0]
+	if !slices.Equal(route.AllowedAccounts, []string{"b", "A", "a"}) {
+		t.Fatalf("accounts = %#v", route.AllowedAccounts)
+	}
+	signature := routeSignature(route)
+	route.AllowedAccounts = []string{"A", "b", "a"}
+	if routeSignature(route) == signature {
+		t.Fatal("account order must change route signature")
+	}
+	for _, list := range []string{"[' ']", "[a, ' a ']", "[123]", "[true]", "[null]", "not-an-array"} {
+		_, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    models: [model-a]\n    allowed_accounts: " + list + "\n"))
+		if err == nil || !strings.Contains(err.Error(), "allowed_accounts") {
+			t.Fatalf("%s: expected allowed_accounts error, got %v", list, err)
+		}
+	}
+}

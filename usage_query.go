@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type usageRouterKey struct{ model, attribution string }
@@ -73,10 +73,27 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 		withCosts := overview != nil || grouped != nil || requests != nil
 		var selection *usageRequestSelection
 		if requests != nil {
-			selection = newUsageRequestSelection(*requests, filter, withCosts)
+			selection = newUsageRequestSelection(*requests, filter)
+		}
+		sessions := make(map[string][]storedRequestSession)
+		if err := scanRequestSessions(connection, func(session storedRequestSession) {
+			if session.LegacyRequestID == "" && session.TraceID != "" {
+				sessions[session.TraceID] = append(sessions[session.TraceID], session)
+			}
+			if selection != nil {
+				selection.addSession(session)
+			}
+		}); err != nil {
+			return err
 		}
 		if overview != nil || grouped != nil {
-			err := scanUsageRecords(connection, filter, func(record storedUsageRecord) {
+			err := scanUsageRecords(connection, usageFilter{From: filter.From, To: filter.To}, func(record storedUsageRecord) {
+				if matching := sessions[record.TraceID]; record.TraceID != "" && len(matching) == 1 {
+					record = sessionAttributedRecord(record, matching[0])
+				}
+				if !filter.matches(record) {
+					return
+				}
 				var cost estimatedCost
 				if withCosts {
 					cost = estimateUsageCost(record, resolver)
@@ -93,13 +110,9 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 			}
 		}
 		if selection != nil {
-			err := scanUsageRecords(connection, usageFilter{}, func(record storedUsageRecord) {
+			if err := scanUsageRecords(connection, usageFilter{}, func(record storedUsageRecord) {
 				selection.add(record, estimateUsageCost(record, resolver))
-			})
-			if err != nil {
-				return err
-			}
-			if err := scanRequestSessions(connection, selection.addSession); err != nil {
+			}); err != nil {
 				return err
 			}
 		}
@@ -110,7 +123,7 @@ func (store *usageStore) queryUsage(filter usageFilter, granularity string, grou
 			result.Groups = grouped.finish(*groups, now)
 		}
 		if selection != nil {
-			result.Requests = selection.finish(resolver, book.Revision, now)
+			result.Requests = selection.finish(book.Revision, now)
 		}
 		return nil
 	})
@@ -415,34 +428,43 @@ func paginateGroups(items []usageGroup, offset, limit int) []usageGroup {
 
 type usageRequestCandidate struct {
 	storedUsageRecord
-	cost           estimatedCost
-	sortValue      float64
-	tps            float64
-	generationNS   uint64
-	attempts       []usageRequestCandidate
-	requestedModel string
-	stream         bool
-	aggregate      bool
+	cost               estimatedCost
+	sortValue          float64
+	generationNS       uint64
+	tps                float64
+	effectiveCache     uint64
+	attempts           []usageRequestCandidate
+	warning            string
+	lifecycleRequestID string
+	outcome            string
+	requestedModel     string
+	stream             bool
+	aggregate          bool
 }
 
+// usageRequestSelection pages logical requests: exact trace parents, legacy router groups and standalone rows.
+// It reads every record so filters and pagination never split a parent from its children.
 type usageRequestSelection struct {
 	options         usagePageOptions
 	filter          usageFilter
 	items           []usageRequestCandidate
 	standalone      []usageRequestCandidate
-	grouped         map[string][]usageRequestCandidate
+	traces          map[string][]usageRequestCandidate
 	byRequest       map[string][]usageRequestCandidate
-	sessions        map[string]storedRequestSession
+	legacy          map[string][]usageRequestCandidate
+	sessions        map[string][]storedRequestSession
+	legacySessions  map[string]storedRequestSession
 	total, capacity int
-	withCosts       bool
 }
 
-func newUsageRequestSelection(options usagePageOptions, filter usageFilter, withCosts bool) *usageRequestSelection {
+const ambiguousTraceWarning = "trace ID is shared by several inbound requests; execution records are not assigned to a parent"
+
+func newUsageRequestSelection(options usagePageOptions, filter usageFilter) *usageRequestSelection {
 	capacity := int(^uint(0) >> 1)
 	if options.Offset <= capacity-options.Limit {
 		capacity = options.Offset + options.Limit
 	}
-	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, grouped: make(map[string][]usageRequestCandidate), byRequest: make(map[string][]usageRequestCandidate), sessions: make(map[string]storedRequestSession), withCosts: withCosts}
+	return &usageRequestSelection{options: options, filter: filter, capacity: capacity, traces: make(map[string][]usageRequestCandidate), byRequest: make(map[string][]usageRequestCandidate), legacy: make(map[string][]usageRequestCandidate), sessions: make(map[string][]storedRequestSession), legacySessions: make(map[string]storedRequestSession)}
 }
 
 func (selection *usageRequestSelection) better(left, right usageRequestCandidate) bool {
@@ -451,7 +473,16 @@ func (selection *usageRequestSelection) better(left, right usageRequestCandidate
 		comparison = compareUint64(left.Sequence, right.Sequence)
 	}
 	if comparison == 0 {
+		comparison = strings.Compare(left.TraceID, right.TraceID)
+	}
+	if comparison == 0 {
+		comparison = strings.Compare(left.lifecycleRequestID, right.lifecycleRequestID)
+	}
+	if comparison == 0 {
 		comparison = strings.Compare(left.RequestID, right.RequestID)
+	}
+	if comparison == 0 {
+		comparison = strings.Compare(left.RouterRequestID, right.RouterRequestID)
 	}
 	if selection.options.Order == "asc" {
 		return comparison < 0
@@ -478,37 +509,38 @@ func (selection *usageRequestSelection) Pop() any {
 }
 
 func (selection *usageRequestSelection) add(record storedUsageRecord, cost estimatedCost) {
-	generation := record.LatencyNS
-	if record.TTFTNS > 0 && record.LatencyNS >= record.TTFTNS {
-		generation -= record.TTFTNS
-	}
-	candidate := usageRequestCandidate{storedUsageRecord: record, cost: cost, generationNS: generation}
-	if generation > 0 {
-		candidate.tps = float64(record.OutputTokens) / (float64(generation) / float64(time.Second))
-	}
-	if selection.options.Sort == "cost" {
-		candidate.sortValue = cost.TotalUSD
-	}
-	if record.RequestID != "" {
+	candidate := usageRequestCandidate{storedUsageRecord: record, cost: cost}
+	candidate.generationNS, candidate.tps = recordTiming(record)
+	switch {
+	case record.TraceID != "":
+		selection.traces[record.TraceID] = append(selection.traces[record.TraceID], candidate)
+	case record.RequestID != "":
 		selection.byRequest[record.RequestID] = append(selection.byRequest[record.RequestID], candidate)
-		return
+	case record.Attribution == attributionRouted && record.RouterRequestID != "":
+		selection.legacy[record.RouterRequestID] = append(selection.legacy[record.RouterRequestID], candidate)
+	default:
+		selection.standalone = append(selection.standalone, candidate)
 	}
-	if record.Attribution == attributionRouted && record.RouterRequestID != "" {
-		selection.grouped[record.RouterRequestID] = append(selection.grouped[record.RouterRequestID], candidate)
-		return
-	}
-	selection.standalone = append(selection.standalone, candidate)
 }
 
 func (selection *usageRequestSelection) addSession(session storedRequestSession) {
-	if session.RequestID != "" {
-		selection.sessions[session.RequestID] = session
+	if session.LegacyRequestID != "" {
+		selection.legacySessions[session.LegacyRequestID] = session
+	} else if session.TraceID != "" {
+		selection.sessions[session.TraceID] = append(selection.sessions[session.TraceID], session)
 	}
 }
 
-func (selection *usageRequestSelection) selectCandidate(candidate usageRequestCandidate) {
+func (selection *usageRequestSelection) addLogical(candidate usageRequestCandidate) {
+	if !selection.matchesLogical(candidate) {
+		return
+	}
+	selection.total++
 	if selection.capacity == 0 {
 		return
+	}
+	if selection.options.Sort == "cost" {
+		candidate.sortValue = candidate.cost.TotalUSD
 	}
 	if len(selection.items) < selection.capacity {
 		selection.items = append(selection.items, candidate)
@@ -520,23 +552,70 @@ func (selection *usageRequestSelection) selectCandidate(candidate usageRequestCa
 		heap.Fix(selection, 0)
 	}
 }
-func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revision uint64, now time.Time) usageRequestPage {
+func (selection *usageRequestSelection) matchesLogical(candidate usageRequestCandidate) bool {
+	filter := selection.filter
+	if (!filter.From.IsZero() && candidate.RequestedAt.Before(filter.From)) || (!filter.To.IsZero() && !candidate.RequestedAt.Before(filter.To)) || (filter.Attribution != "" && !equalFold(candidate.Attribution, filter.Attribution)) || (filter.RouterModel != "" && !equalFold(candidate.RouterModel, filter.RouterModel)) || (filter.Result != "" && !equalFold(candidateResult(candidate), filter.Result)) {
+		return false
+	}
+	if filter.ProviderModel == "" && filter.Source == "" && filter.ServiceTier == "" {
+		return true
+	}
+	children := candidate.attempts
+	if !candidate.aggregate {
+		children = []usageRequestCandidate{candidate}
+	}
+	for _, child := range children {
+		if (filter.ProviderModel == "" || equalFold(child.ProviderModel, filter.ProviderModel)) && (filter.Source == "" || equalFold(child.Source, filter.Source)) && (filter.ServiceTier == "" || equalFold(child.ServiceTier, filter.ServiceTier)) {
+			return true
+		}
+	}
+	return false
+}
 
-	selection.items = nil
-	selection.total = 0
+func candidateResult(candidate usageRequestCandidate) string {
+	if candidate.aggregate && candidate.TraceID != "" && candidate.outcome == "" {
+		return "unknown"
+	}
+	return candidate.result()
+}
+
+func (selection *usageRequestSelection) finish(revision uint64, now time.Time) usageRequestPage {
 	for _, candidate := range selection.standalone {
 		selection.addLogical(candidate)
 	}
-	for id, session := range selection.sessions {
-		session := session
-		selection.addLogical(requestParent(id, &session, selection.byRequest[id]))
+	for trace, sessions := range selection.sessions {
+		children := selection.traces[trace]
+		delete(selection.traces, trace)
+		if len(sessions) == 1 {
+			selection.addLogical(requestParent(trace, &sessions[0], children))
+			continue
+		}
+		// A short trace collision must not assign executions to an arbitrary inbound request.
+		for i := range sessions {
+			parent := requestParent(trace, &sessions[i], nil)
+			parent.warning = ambiguousTraceWarning
+			selection.addLogical(parent)
+		}
+		for _, child := range children {
+			child.warning = ambiguousTraceWarning
+			selection.addLogical(child)
+		}
+	}
+	for trace, children := range selection.traces {
+		selection.addLogical(requestParent(trace, nil, children))
+	}
+	for id, session := range selection.legacySessions {
+		parent := requestParent("", &session, selection.byRequest[id])
+		parent.RequestID = id
+		selection.addLogical(parent)
 		delete(selection.byRequest, id)
 	}
-	// Provider usage can arrive before the asynchronous lifecycle completion; synthesize a temporary parent from the exact request ID.
 	for id, children := range selection.byRequest {
-		selection.addLogical(requestParent(id, nil, children))
+		parent := requestParent("", nil, children)
+		parent.RequestID = id
+		selection.addLogical(parent)
 	}
-	for _, attempts := range selection.grouped {
+	for id, attempts := range selection.legacy {
 		sort.SliceStable(attempts, func(i, j int) bool {
 			if attempts[i].RouterAttempt != attempts[j].RouterAttempt {
 				return attempts[i].RouterAttempt < attempts[j].RouterAttempt
@@ -544,7 +623,7 @@ func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revi
 			return attempts[i].Sequence < attempts[j].Sequence
 		})
 		parent := aggregateRequestAttempts(attempts)
-		parent.attempts = attempts
+		parent.RouterRequestID = id
 		selection.addLogical(parent)
 	}
 	options := selection.options
@@ -553,37 +632,42 @@ func (selection *usageRequestSelection) finish(resolver modelPriceResolver, revi
 		sort.Slice(selection.items, func(i, j int) bool { return selection.better(selection.items[i], selection.items[j]) })
 		end := options.Offset + min(options.Limit, len(selection.items)-options.Offset)
 		for _, candidate := range selection.items[options.Offset:end] {
-			var detail usageRequestDetail
-			if selection.withCosts {
-				detail = requestDetailWithCost(candidate.storedUsageRecord, candidate.cost)
-			} else {
-				detail = requestDetail(candidate.storedUsageRecord, resolver)
-			}
-			detail.RequestedModel, detail.Stream = candidate.requestedModel, candidate.stream
-			if candidate.aggregate {
-				detail.GenerationNS = candidate.generationNS
-				detail.TPS = candidate.tps
-				detail.EffectiveCacheReadTokens = candidate.CacheReadTokens
-				detail.CacheHit = candidate.CacheReadTokens > 0
-			}
-			if len(candidate.attempts) > 0 {
-				detail.Attempts = make([]usageRequestDetail, 0, len(candidate.attempts))
-				for _, attempt := range candidate.attempts {
-					if selection.withCosts {
-						detail.Attempts = append(detail.Attempts, requestDetailWithCost(attempt.storedUsageRecord, attempt.cost))
-					} else {
-						detail.Attempts = append(detail.Attempts, requestDetail(attempt.storedUsageRecord, resolver))
-					}
-				}
-				detail.AttemptCount = len(detail.Attempts)
-			}
-			items = append(items, detail)
+			items = append(items, candidate.detail())
 		}
 	}
 	return usageRequestPage{SchemaVersion: usageManagementSchemaVersion, GeneratedAt: now, PriceBookRevision: revision, Total: selection.total, Offset: options.Offset, Limit: options.Limit, Items: items}
 }
 
-// orderRequestChildren picks one ordering mode per parent; a mixed pairwise comparator would not be a strict weak order.
+func (candidate usageRequestCandidate) detail() usageRequestDetail {
+	detail := requestDetailWithCost(candidate.storedUsageRecord, candidate.cost)
+	detail.Result, detail.CorrelationWarning = candidateResult(candidate), candidate.warning
+	detail.LifecycleRequestID, detail.Outcome, detail.RequestedModel, detail.Stream = candidate.lifecycleRequestID, candidate.outcome, candidate.requestedModel, candidate.stream
+	if candidate.aggregate {
+		detail.GenerationNS, detail.TPS = candidate.generationNS, candidate.tps
+		detail.EffectiveCacheReadTokens, detail.CacheHit = candidate.effectiveCache, candidate.effectiveCache > 0
+		if len(candidate.attempts) > 0 {
+			detail.Attempts = make([]usageRequestDetail, 0, len(candidate.attempts))
+			for _, child := range candidate.attempts {
+				detail.Attempts = append(detail.Attempts, child.detail())
+			}
+			detail.AttemptCount = len(detail.Attempts)
+		}
+	}
+	return detail
+}
+
+func recordTiming(record storedUsageRecord) (uint64, float64) {
+	generation := record.LatencyNS
+	if record.TTFTNS > 0 && record.LatencyNS >= record.TTFTNS {
+		generation -= record.TTFTNS
+	}
+	if generation == 0 {
+		return 0, 0
+	}
+	return generation, float64(record.OutputTokens) / (float64(generation) / float64(time.Second))
+}
+
+// orderRequestChildren picks one ordering mode per legacy parent; a mixed pairwise comparator would not be a strict weak order.
 func orderRequestChildren(children []usageRequestCandidate) bool {
 	byAttempt := children[0].RouterRequestID != ""
 	for _, child := range children {
@@ -605,20 +689,40 @@ func orderRequestChildren(children []usageRequestCandidate) bool {
 	return byAttempt
 }
 
-// requestParent builds one inbound-request row. Lifecycle session fields win over child-derived ones; without a
-// session (usage arrived first) the parent is derived from its children alone.
-func requestParent(id string, session *storedRequestSession, children []usageRequestCandidate) usageRequestCandidate {
+// requestParent builds one inbound-request row. A non-empty trace is the exact v8 key; an empty trace is a
+// pre-v8 row group keyed by the caller's stored RequestID. Without a session the parent is derived from its children.
+func requestParent(trace string, session *storedRequestSession, children []usageRequestCandidate) usageRequestCandidate {
 	parent := usageRequestCandidate{aggregate: true}
 	if len(children) > 0 {
-		sameRouterRequest := orderRequestChildren(children)
-		parent = aggregateRequestAttempts(children)
-		parent.attempts = children
-		if !sameRouterRequest {
-			parent.RouterRequestID = ""
+		sameRouterRequest := false
+		if trace == "" {
+			sameRouterRequest = orderRequestChildren(children)
+		} else {
+			sort.SliceStable(children, func(i, j int) bool {
+				if !children[i].RequestedAt.Equal(children[j].RequestedAt) {
+					return children[i].RequestedAt.Before(children[j].RequestedAt)
+				}
+				return children[i].Sequence < children[j].Sequence
+			})
+			if session != nil {
+				for i := range children {
+					children[i].storedUsageRecord = sessionAttributedRecord(children[i].storedUsageRecord, *session)
+				}
+			}
 		}
-		parent.Attribution = children[0].Attribution
-		parent.RouterAttempt = 0
+		last := children[len(children)-1]
+		parent = aggregateRequestAttempts(children)
+		if trace == "" {
+			parent.Attribution = children[0].Attribution
+			if !sameRouterRequest {
+				parent.RouterRequestID = ""
+			}
+		} else {
+			parent.Attribution, parent.RouterModel = last.Attribution, last.RouterModel
+			parent.Failed, parent.StatusCode = false, 0
+		}
 		parent.Provider, parent.ExecutorType, parent.ReasoningMode, parent.ProviderModel, parent.ProviderAlias, parent.ReasoningEffort, parent.ServiceTier, parent.MaskedAPIKey = "", "", "", "", "", "", "", ""
+		parent.AuthID, parent.AuthIndex, parent.CredentialLabel = "", "", ""
 		parent.Generate = false
 		parent.RequestEndpoint = ""
 		for _, child := range children {
@@ -628,87 +732,72 @@ func requestParent(id string, session *storedRequestSession, children []usageReq
 			}
 		}
 	}
-	parent.RequestID = id
-	if session != nil {
-		parent.Attribution, parent.RouterModel = session.Attribution, session.RouterModel
-		parent.Failed = session.Outcome != string(pluginapi.RequestCompletionSucceeded)
-		parent.StatusCode, parent.LatencyNS = session.StatusCode, session.LatencyNS
-		parent.RequestEndpoint = firstNonEmpty(parent.RequestEndpoint, session.Endpoint)
-		parent.requestedModel, parent.stream = session.RequestedModel, session.Stream
-		if !session.StartedAt.IsZero() {
-			parent.RequestedAt = session.StartedAt
+	parent.TraceID, parent.RouterAttempt = trace, 0
+	if trace != "" {
+		parent.RequestID, parent.RouterRequestID = "", ""
+		if len(children) == 0 {
+			parent.Attribution = attributionDirect
 		}
+	}
+	if session == nil {
+		return parent
+	}
+	parent.storedUsageRecord = sessionAttributedRecord(parent.storedUsageRecord, *session)
+	parent.lifecycleRequestID, parent.outcome = session.LifecycleRequestID, session.Outcome
+	parent.Failed = session.Outcome != "" && session.Outcome != string(pluginapi.RequestCompletionSucceeded)
+	parent.StatusCode = session.HTTPStatus
+	if session.Latency > 0 {
+		parent.LatencyNS = uint64(session.Latency)
+	}
+	if trace != "" {
+		parent.RequestEndpoint = firstNonEmpty(session.RequestEndpoint, parent.RequestEndpoint)
+	} else {
+		parent.RequestEndpoint = firstNonEmpty(parent.RequestEndpoint, session.RequestEndpoint)
+	}
+	parent.requestedModel, parent.stream = session.RequestedModel, session.Stream
+	if !session.StartedAt.IsZero() {
+		parent.RequestedAt = session.StartedAt
 	}
 	return parent
 }
 
-func (selection *usageRequestSelection) addLogical(candidate usageRequestCandidate) {
-	if !selection.matchesLogical(candidate) {
-		return
+func sessionAttributedRecord(record storedUsageRecord, session storedRequestSession) storedUsageRecord {
+	record.Attribution, record.RouterModel = attributionDirect, session.RouterModel
+	if session.LegacyRequestID != "" && session.Attribution != "" {
+		record.Attribution = session.Attribution
+	} else if session.RouterModel != "" {
+		record.Attribution = attributionRouted
 	}
-	selection.total++
-	selection.selectCandidate(candidate)
-}
-
-func (selection *usageRequestSelection) matchesLogical(candidate usageRequestCandidate) bool {
-	filter := selection.filter
-	if (!filter.From.IsZero() && candidate.RequestedAt.Before(filter.From)) || (!filter.To.IsZero() && !candidate.RequestedAt.Before(filter.To)) || (filter.Attribution != "" && !equalFold(candidate.Attribution, filter.Attribution)) || (filter.RouterModel != "" && !equalFold(candidate.RouterModel, filter.RouterModel)) || (filter.Result != "" && !equalFold(candidate.result(), filter.Result)) {
-		return false
-	}
-	if filter.ProviderModel == "" && filter.Source == "" && filter.ServiceTier == "" {
-		return true
-	}
-	attempts := candidate.attempts
-	if len(attempts) == 0 && candidate.RequestID == "" {
-		attempts = []usageRequestCandidate{candidate}
-	}
-	for _, attempt := range attempts {
-		if (filter.ProviderModel == "" || equalFold(attempt.ProviderModel, filter.ProviderModel)) && (filter.Source == "" || equalFold(attempt.Source, filter.Source)) && (filter.ServiceTier == "" || equalFold(attempt.ServiceTier, filter.ServiceTier)) {
-			return true
-		}
-	}
-	return false
+	return record
 }
 
 func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCandidate {
 	parent := attempts[len(attempts)-1]
-	parent.aggregate = true
+	parent.aggregate, parent.attempts, parent.warning = true, attempts, ""
 	parent.Attribution = attributionRouted
-	parent.RouterRequestID = attempts[0].RouterRequestID
-	parent.RouterModel = ""
+	parent.RouterRequestID, parent.RouterModel = attempts[0].RouterRequestID, ""
 	for _, attempt := range attempts {
 		if attempt.RouterModel != "" {
 			parent.RouterModel = attempt.RouterModel
 			break
 		}
 	}
-	parent.Source = ""
-	parent.AccountingMode = ""
-	parent.InputTokens = 0
-	parent.OutputTokens = 0
-	parent.ReasoningTokens = 0
-	parent.CachedTokens = 0
-	parent.CacheReadTokens = 0
-	parent.CacheCreationTokens = 0
-	parent.TotalTokens = 0
-	parent.LatencyNS = 0
-	parent.TTFTNS = 0
-	parent.generationNS = 0
+	parent.Source, parent.AccountingMode = "", ""
+	parent.InputTokens, parent.OutputTokens, parent.ReasoningTokens, parent.CachedTokens, parent.CacheReadTokens, parent.CacheCreationTokens, parent.TotalTokens = 0, 0, 0, 0, 0, 0, 0
+	parent.LatencyNS, parent.TTFTNS, parent.generationNS, parent.effectiveCache = 0, 0, 0, 0
 	parent.cost = estimatedCost{Priced: true}
-	parent.sortValue = 0
 	parent.RequestedAt, parent.Sequence = attempts[0].RequestedAt, attempts[0].Sequence
 	for _, attempt := range attempts {
 		if attempt.RequestedAt.Before(parent.RequestedAt) {
 			parent.RequestedAt = attempt.RequestedAt
 		}
-		if attempt.Sequence < parent.Sequence {
-			parent.Sequence = attempt.Sequence
-		}
+		parent.Sequence = min(parent.Sequence, attempt.Sequence)
 		parent.InputTokens += attempt.InputTokens
 		parent.OutputTokens += attempt.OutputTokens
 		parent.ReasoningTokens += attempt.ReasoningTokens
 		parent.CachedTokens += attempt.CachedTokens
 		parent.CacheReadTokens += effectiveCacheReadTokens(attempt.storedUsageRecord)
+		parent.effectiveCache += effectiveCacheReadTokens(attempt.storedUsageRecord)
 		parent.CacheCreationTokens += attempt.CacheCreationTokens
 		parent.TotalTokens += attempt.TotalTokens
 		parent.LatencyNS += attempt.LatencyNS
@@ -725,10 +814,7 @@ func aggregateRequestAttempts(attempts []usageRequestCandidate) usageRequestCand
 	}
 	last := attempts[len(attempts)-1]
 	if last.TTFTNS > 0 {
-		parent.TTFTNS = last.TTFTNS
-		for _, attempt := range attempts[:len(attempts)-1] {
-			parent.TTFTNS += attempt.LatencyNS
-		}
+		parent.TTFTNS = last.TTFTNS + parent.LatencyNS - last.LatencyNS
 	}
 	if parent.generationNS > 0 {
 		parent.tps = float64(parent.OutputTokens) / (float64(parent.generationNS) / float64(time.Second))
@@ -748,7 +834,7 @@ func compareRequests(left, right usageRequestCandidate, field string) int {
 	case "service_tier":
 		return strings.Compare(strings.ToLower(left.ServiceTier), strings.ToLower(right.ServiceTier))
 	case "result":
-		return strings.Compare(left.result(), right.result())
+		return strings.Compare(candidateResult(left), candidateResult(right))
 	case "latency":
 		return compareUint64(left.LatencyNS, right.LatencyNS)
 	case "ttft":

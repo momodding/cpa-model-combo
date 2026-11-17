@@ -40,6 +40,12 @@ type storedUsageRecord struct {
 	RouterModel         string    `json:"router_model,omitempty"`
 	RouterRequestID     string    `json:"router_request_id,omitempty"`
 	RouterAttempt       int       `json:"router_attempt"`
+	TraceID             string    `json:"trace_id,omitempty"`
+	RequestID           string    `json:"request_id,omitempty"`
+	RequestEndpoint     string    `json:"request_endpoint,omitempty"`
+	AuthID              string    `json:"auth_id,omitempty"`
+	AuthIndex           string    `json:"auth_index,omitempty"`
+	CredentialLabel     string    `json:"credential_label,omitempty"`
 	Provider            string    `json:"provider,omitempty"`
 	ExecutorType        string    `json:"executor_type,omitempty"`
 	AccountingMode      string    `json:"accounting_mode,omitempty"`
@@ -62,8 +68,6 @@ type storedUsageRecord struct {
 	CacheReadTokens     uint64    `json:"cache_read_tokens"`
 	CacheCreationTokens uint64    `json:"cache_creation_tokens"`
 	TotalTokens         uint64    `json:"total_tokens"`
-	RequestID           string    `json:"request_id,omitempty"`
-	RequestEndpoint     string    `json:"request_endpoint,omitempty"`
 }
 
 func (record storedUsageRecord) result() string {
@@ -80,14 +84,17 @@ type usageRequestDetail struct {
 	storedUsageRecord
 	RequestedModel           string               `json:"requested_model,omitempty"`
 	Stream                   bool                 `json:"stream"`
+	Attempts                 []usageRequestDetail `json:"attempts,omitempty"`
+	AttemptCount             int                  `json:"attempt_count,omitempty"`
+	CorrelationWarning       string               `json:"correlation_warning,omitempty"`
+	LifecycleRequestID       string               `json:"lifecycle_request_id,omitempty"`
+	Outcome                  string               `json:"outcome,omitempty"`
 	Result                   string               `json:"result"`
 	GenerationNS             uint64               `json:"generation_ns"`
 	TPS                      float64              `json:"tps"`
 	EffectiveCacheReadTokens uint64               `json:"effective_cache_read_tokens"`
 	CacheHit                 bool                 `json:"cache_hit"`
 	EstimatedCost            *estimatedCost       `json:"estimated_cost,omitempty"`
-	Attempts                 []usageRequestDetail `json:"attempts,omitempty"`
-	AttemptCount             int                  `json:"attempt_count,omitempty"`
 }
 
 func requestDetail(record storedUsageRecord, resolver modelPriceResolver) usageRequestDetail {

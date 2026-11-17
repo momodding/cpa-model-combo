@@ -24,6 +24,7 @@ function normalizeRoute(value,index){
     alias:String(route.alias||('route-'+(index+1))),
     strategy,
     cooldown_seconds:String(cooldown),
+    allowed_accounts:Array.isArray(route.allowed_accounts)?route.allowed_accounts.slice():[],
     targets
   };
   if(strategy==='last_known_good'){
@@ -41,6 +42,7 @@ function serializeRoutes(routes){
       cooldown_seconds:integerDraftValue(route.cooldown_seconds),
       targets:route.targets.map(target=>({model:target.model.trim(),weight:integerDraftValue(target.weight)}))
     };
+    if(Array.isArray(route.allowed_accounts)&&route.allowed_accounts.length)serialized.allowed_accounts=route.allowed_accounts.slice();
     const lkg=route.strategy==='last_known_good';
     if(lkg||route.success_rate_threshold!==undefined)serialized.success_rate_threshold=Number(String(route.success_rate_threshold??DEFAULT_LKG.success_rate_threshold).trim());
     if(lkg||route.minimum_samples!==undefined)serialized.minimum_samples=integerDraftValue(route.minimum_samples??DEFAULT_LKG.minimum_samples);
