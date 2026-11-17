@@ -551,7 +551,7 @@ func (selection *usageRequestSelection) attachSkips(parent usageRequestCandidate
 	for _, skip := range skips {
 		skip := skip
 		parent.attempts = append(parent.attempts, usageRequestCandidate{storedUsageRecord: storedUsageRecord{
-			RequestedAt: skip.RequestedAt, ProviderModel: skip.Model, AuthID: skip.CredentialID, CredentialLabel: skip.CredentialLabel,
+			TraceID: skip.TraceID, RequestedAt: skip.RequestedAt, ProviderModel: skip.Model, AuthID: skip.CredentialID, CredentialLabel: skip.CredentialLabel,
 		}, skip: &skip})
 	}
 	sort.SliceStable(parent.attempts, func(i, j int) bool {
@@ -671,7 +671,7 @@ func (candidate usageRequestCandidate) detail() usageRequestDetail {
 	if candidate.skip != nil {
 		dispatched := false
 		skip := candidate.skip
-		detail := usageRequestDetail{storedUsageRecord: candidate.storedUsageRecord, Result: "cooling_down", Status: "cooling_down", Dispatched: &dispatched, Order: skip.Attempt + 1}
+		detail := usageRequestDetail{storedUsageRecord: candidate.storedUsageRecord, LifecycleRequestID: skip.LifecycleRequestID, Result: "cooling_down", Status: "cooling_down", Dispatched: &dispatched, Order: skip.Attempt + 1}
 		if !skip.RetryAt.IsZero() {
 			detail.RetryAt = &skip.RetryAt
 		}

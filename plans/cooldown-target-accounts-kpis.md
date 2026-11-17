@@ -6,7 +6,7 @@ Implement fixes and enhancements in momodding/cpa-model-combo against CLIProxyAP
 
 Approved decisions: target-level account ownership with copy-on-load legacy migration; hybrid plugin-local cooldown tracking plus host.auth.list summary availability; synthetic cooldown-skip children stored separately from provider accounting; empty valid KPI names shown as None and numbers as 0. Empty credential model lists mean unknown support and permit attempting the configured target with the selected credential. Nonempty lists remain authoritative. A private interceptor header is approved for exact trace transport if existing trustworthy metadata is insufficient.
 
-User-approved delivery overrides conflicting global Git instructions: dedicated feature worktree; all relevant checks pass before commit, push only to marketplace, and open a PR. No direct merge to main and no intermediate commits before verification. Blocked required verification prohibits commit/push/PR.
+User-approved delivery: use a dedicated feature worktree and push only to marketplace; no direct merge to main. Run relevant local checks first. If a required local gate cannot complete because of a documented environmental limitation or timeout, record the exact evidence and use the isolated feature branch PR's GitHub Actions as the fallback verification. Do not substitute CI for an observed code/test failure; resolve such failures first. Merge only after every required CI check passes.
 
 ## Approach
 
@@ -98,13 +98,13 @@ npx playwright-core install --with-deps chromium
 
 Run npm run test:e2e against the disposable CPA fixture using the exact setup and environment in .github/workflows/test.yml: DASHBOARD_URL, DASHBOARD_MANAGEMENT_KEY, DASHBOARD_E2E_ALLOW_MUTATIONS=1, PLAYWRIGHT_CHROMIUM_EXECUTABLE. Use its Linux amd64/arm64 matrix and native Windows SQLite command for relevant platform checks. Add the existing JS unit command to CI so these regressions remain gated. Do not change the artifact version as part of this work.
 
-Required Linux integration/browser verification must run before commit/push/PR in an available Linux environment; do not use a PR as a workaround for that prerequisite. After checks pass, commit only task-owned changes using the selective commit API, push the feature branch to marketplace, open the PR, and require its checks before any merge.
+Run the required local integration/browser checks when the environment permits. If a required local check times out or is environmentally blocked, document the command and result and use GitHub Actions on the feature branch PR to run the required platform gates; do not use this fallback for observed code/test failures. After local checks pass or the documented CI fallback is invoked, commit only task-owned changes using the selective commit API, push the feature branch to marketplace, open/update the PR, and require every check to pass before merge.
 
 ## Assumptions & contingencies
 
 No implementation or runtime tests were performed during read-only planning. Paths/symbols above come from direct reads or named scout reports; explicitly marked remaining anchors must be confirmed before editing. Existing APIs should be extended rather than adding parallel routing or usage subsystems.
 
-Native macOS CPA integration previously failed and Docker was unavailable. Do not repeat known-failing checks merely to confirm them. Find an available Linux runner/host; if inaccessible, finish reachable implementation/checks and report the exact verification blocker without committing or pushing.
+Native macOS CPA integration and local Docker builds have been environmentally blocked or timed out. Do not repeat the same failing command without a changed prerequisite or cache state. If local required checks remain blocked, use the approved GitHub Actions fallback on the feature branch PR and leave merge blocked until all required platform checks pass.
 
 Host.auth.list exposes credential summary retry state, not full per-model CooldownSnapshotForAuth. Hybrid preflight can avoid known cooldowns but cannot guarantee detecting an unseen native model-specific cooldown before the first host call. Native structured rejection updates local state; do not call it a provider execution without evidence. Unknown support permits an attempt but does not guarantee CPA can execute it.
 

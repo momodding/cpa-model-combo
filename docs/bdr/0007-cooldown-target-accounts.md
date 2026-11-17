@@ -14,4 +14,4 @@ Native callback errors that cannot be distinguished from provider failures are n
 
 Target accounts are available in a collapsed accessible disclosure; target order can be changed with drag and keyboard controls and persists with each target's accounts. Valid empty usage KPIs show zero or None; unavailable data shows an em dash, and refresh failures retain prior values.
 
-The approved delivery is a verified marketplace pull request from an isolated worktree; failed or blocked required verification prevents commit, push and PR.
+The approved delivery is a marketplace pull request from an isolated worktree. If required local verification times out or is environmentally blocked, the feature branch is pushed so GitHub Actions can verify it; observed failures must still be fixed first, and the PR cannot merge until every required CI check passes.

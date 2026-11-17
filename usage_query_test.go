@@ -28,7 +28,7 @@ func TestUsageRequestSelectionRoutingSkipsExactSession(t *testing.T) {
 				t.Fatalf("first parent = %#v", parent)
 			}
 			child := parent.Attempts[0]
-			if child.ProviderModel != "cooling" || child.Status != "cooling_down" || child.Dispatched == nil || *child.Dispatched || child.Order != 3 || child.RetryAt == nil || !child.RetryAt.Equal(now.Add(time.Minute)) || child.EstimatedCost != nil || child.RequestID != "" {
+			if child.TraceID != parent.TraceID || child.LifecycleRequestID != parent.LifecycleRequestID || child.ProviderModel != "cooling" || child.Status != "cooling_down" || child.Dispatched == nil || *child.Dispatched || child.Order != 3 || child.RetryAt == nil || !child.RetryAt.Equal(now.Add(time.Minute)) || child.EstimatedCost != nil || child.RequestID != "" {
 				t.Fatalf("skip child = %#v", child)
 			}
 		case parent.TraceID == "shared" && parent.LifecycleRequestID == "second":

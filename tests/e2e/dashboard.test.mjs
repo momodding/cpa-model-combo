@@ -247,7 +247,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     const controls = (await toggle.getAttribute('aria-controls')).split(' ');
     assert.equal(controls.length, 2);
     assert.deepEqual(await Promise.all(controls.map((id) => page.locator('#' + id).count())), [1, 1]);
-    assert.equal(await page.getByRole('button', { name: 'Expand 1 executions for request', exact: true }).count(), 2, 'direct and legacy grouped requests are expandable');
+    assert.equal(await page.getByRole('button', { name: 'Expand 1 execution for request', exact: true }).count(), 2, 'direct and legacy grouped requests are expandable');
     assert.equal(await page.locator('.request-parent-row').nth(2).locator('button').count(), 0, 'legacy standalone row has no children to expand');
     assert.deepEqual(await page.locator('.request-parent-row').first().locator('td').evaluateAll((cells) => cells.slice(0, 3).map((cell) => cell.textContent)), ['›1234 2 executions', 'POST /v1/chat/completions', 'route-a']);
     await toggle.click();
@@ -368,7 +368,8 @@ test('account restrictions filter targets and reject stale selections', { timeou
     await row.locator('[data-account-id="account-b"]').check();
     await page.locator('#save').click();
     assert.equal(saved, undefined, 'stale accounts must prevent saving');
-    await row.locator('[data-account-id="missing"]').uncheck();
+    await row.locator('[data-account-id="missing"]').click();
+    assert.equal(await row.locator('[data-account-id="missing"]').count(), 0, 'unchecked stale account is removed from the target');
     await row.locator('[data-account-id="account-a"]').check();
     assert.match(await row.locator('[data-account-id="account-b"]').locator('..').textContent(), /support unknown/);
     assert.match(await row.locator('option[value="model-a"]').textContent(), /First/);
