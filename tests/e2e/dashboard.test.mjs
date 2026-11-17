@@ -228,7 +228,13 @@ test('dashboard tabs retain their browser interactions after source assembly', {
       ],
     };
     const requestRoute = async (route) => { requestCalls++; await route.fulfill({ contentType: 'application/json', body: JSON.stringify(requestPage) }); };
+    const dashboardRoute = async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({ response, json: { ...dashboard, requests: requestPage } });
+    };
     await page.route('**/usage/requests?**', requestRoute);
+    await page.route('**/usage/dashboard?**', dashboardRoute);
     await page.locator('#request-page-size').selectOption('50');
     await waitForUsageReady(page);
     const toggle = page.getByRole('button', { name: 'Expand 2 executions for request', exact: true }).first();
@@ -255,9 +261,11 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     assert.equal(await page.locator('.request-parent-row').first().locator('.status-pill').textContent(), 'Success');
     assert.equal(requestCalls, 1, 'tree toggle should not refetch requests');
     requestPage.items[0].sequence = 999;
+    const refreshed = page.waitForResponse((response) => response.url().includes('/usage/dashboard?') && response.ok());
     await page.locator('#usage-refresh').click();
+    assert.equal((await (await refreshed).json()).requests.items[0].sequence, 999);
     await waitForUsageReady(page);
-    assert.equal(requestCalls, 2);
+    assert.equal(requestCalls, 1, 'full refresh should not fetch scoped requests');
     assert.equal(await page.getByRole('button', { name: 'Collapse 2 executions for request', exact: true }).getAttribute('aria-expanded'), 'true', 'expansion persists across refresh');
     assert.equal(await page.locator('.request-attempt-row[hidden]').count(), 2);
     await page.locator('#request-columns summary').click();
@@ -306,6 +314,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await requestOption('request_endpoint').check();
     assert.equal(await page.locator('.request-parent-row').first().locator('td').first().textContent(), '›1234 2 executions');
     await page.unroute('**/usage/requests?**', requestRoute);
+    await page.unroute('**/usage/dashboard?**', dashboardRoute);
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole('tab', { name: 'Configuration' }).click();
