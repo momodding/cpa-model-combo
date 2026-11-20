@@ -1,4 +1,5 @@
-const STRATEGIES=['priority','round-robin','random','last_known_good'];
+const STRATEGIES=['priority','round-robin','random','last_known_good','headroom'];
+const DEFAULT_QUOTA_POLLING={refresh_seconds:60,idle_seconds:600,ttl_seconds:60,max_stale_seconds:300,fetch_timeout_seconds:5,max_concurrent:3,cold_wait_ms:1500};
 const LKG_KEYS=['success_rate_threshold','minimum_samples','observation_window_minutes'];
 const DEFAULT_LKG={success_rate_threshold:'0.9',minimum_samples:'20',observation_window_minutes:'60'};
 function canonicalIntegerDraft(value){
@@ -28,6 +29,7 @@ function normalizeRoute(value,index){
     cooldown_seconds:String(cooldown),
     targets
   };
+  if(strategy==='headroom')normalized.unknown_quota=route.unknown_quota??'priority';
   if(strategy==='last_known_good'){
     normalized.success_rate_threshold=String(route.success_rate_threshold??DEFAULT_LKG.success_rate_threshold);
     normalized.minimum_samples=String(route.minimum_samples??DEFAULT_LKG.minimum_samples);
@@ -47,6 +49,7 @@ function serializeRoutes(routes){
         return item;
       })
     };
+    if(route.strategy==='headroom')serialized.unknown_quota=route.unknown_quota??'priority';
     const lkg=route.strategy==='last_known_good';
     if(lkg||route.success_rate_threshold!==undefined)serialized.success_rate_threshold=Number(String(route.success_rate_threshold??DEFAULT_LKG.success_rate_threshold).trim());
     if(lkg||route.minimum_samples!==undefined)serialized.minimum_samples=integerDraftValue(route.minimum_samples??DEFAULT_LKG.minimum_samples);
@@ -69,6 +72,7 @@ function validateRoutes(routes){
     else if(aliases.has(aliasKey))errors.push(label+': alias duplicates route '+aliases.get(aliasKey)+'.');
     else aliases.set(aliasKey,index+1);
     if(!STRATEGIES.includes(route.strategy))errors.push(label+': choose a strategy.');
+    if(route.strategy==='headroom'&&!['priority','exclude','last'].includes(route.unknown_quota))errors.push(label+': choose an unknown quota policy.');
     if(!Number.isInteger(route.cooldown_seconds)||route.cooldown_seconds<0)errors.push(label+': cooldown must be a non-negative integer.');
     if(route.strategy==='last_known_good'){
       if(!(Number(route.success_rate_threshold)>0&&Number(route.success_rate_threshold)<=1))errors.push(label+': success rate threshold must be above 0 and at most 1.');
@@ -125,7 +129,8 @@ function configFromResponse(config){
     enabled:config.enabled!==false,
     priority:Number.isInteger(config.priority)?String(config.priority):'0',
     routes:source.map(normalizeRoute),
-    fallback:fallbackDraftFromConfig(config.fallback)
+    fallback:fallbackDraftFromConfig(config.fallback),
+    quota_polling:Object.fromEntries(Object.entries(DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,String(config.quota_polling?.[key]??value)]))
   };
 }
 function parseCodeList(raw){
@@ -162,12 +167,22 @@ function validateFallback(fallback){
   }
   return errors;
 }
+function validateQuotaPolling(polling){
+  const errors=[];
+  for(const key of Object.keys(DEFAULT_QUOTA_POLLING)){
+    const value=integerDraftValue(polling[key]);
+    if(!Number.isSafeInteger(value)||value<1)errors.push('Quota polling '+key.replace(/_/g,' ')+' must be a positive integer.');
+  }
+  if(integerDraftValue(polling.ttl_seconds)>integerDraftValue(polling.max_stale_seconds))errors.push('Quota polling TTL cannot exceed max stale.');
+  return errors;
+}
 function configurationPatchBody(state){
   return{
     enabled:state.enabled,
     priority:integerDraftValue(state.priority),
     routes:serializeRoutes(state.routes),
     fallback:fallbackFromState(state.fallback),
+    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,integerDraftValue(value)])),
     'model-routes':null
   };
 }

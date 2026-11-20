@@ -28,6 +28,8 @@ type routeState struct {
 	accountCooldowns map[string]map[string]time.Time
 	lastSuccess      string
 	observations     map[string][]routeObservation
+	lastHeadroom     headroomSelection
+	headroomSkips    []headroomSelection
 }
 
 type routeSelection struct {
@@ -261,7 +263,7 @@ func (runtime *routeRuntime) Preflight(route modelRoute, accounts map[string][]a
 			}
 			continue
 		}
-		if len(target.AllowedAccounts) == 0 {
+		if len(target.AllowedAccounts) == 0 && route.Strategy != routeStrategyHeadroom {
 			eligible[key] = accounts[key]
 			anyEligible = true
 			continue

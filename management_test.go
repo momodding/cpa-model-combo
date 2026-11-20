@@ -39,6 +39,7 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	}
 	wantedRoutes := map[string]bool{
 		http.MethodGet + " /plugins/model-combo/accounts":           false,
+		http.MethodGet + " /plugins/model-combo/quota":              false,
 		http.MethodPost + " /plugins/model-combo/validate":          false,
 		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
 		http.MethodGet + " /plugins/model-combo/usage/overview":     false,

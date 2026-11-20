@@ -558,3 +558,85 @@ func TestAllowedAccountsConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestHeadroomConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, strategy, policy, want string
+		invalid                      bool
+	}{
+		{name: "default", strategy: "headroom", want: "priority"},
+		{name: "priority", strategy: "headroom", policy: "priority", want: "priority"},
+		{name: "exclude", strategy: "headroom", policy: "exclude", want: "exclude"},
+		{name: "last", strategy: "headroom", policy: "last", want: "last"},
+		{name: "invalid", strategy: "headroom", policy: "invalid", invalid: true},
+		{name: "empty", strategy: "headroom", policy: "''", invalid: true},
+		{name: "other strategy", strategy: "priority", policy: "priority", invalid: true},
+		{name: "legacy route", strategy: "priority"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "routes:\n  - alias: smart\n    strategy: " + tc.strategy + "\n    models: [provider-a]\n"
+			if tc.policy != "" {
+				raw += "    unknown_quota: " + tc.policy + "\n"
+			}
+			cfg, err := decodeRouterConfig([]byte(raw))
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), `routes[0] "smart": invalid unknown_quota policy`) {
+					t.Fatalf("expected invalid policy error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Routes[0].UnknownQuota; got != tc.want {
+				t.Fatalf("unknown_quota = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	cfg, err := decodeRouterConfig([]byte("routes:\n  - alias: smart\n    strategy: headroom\n    models: [provider-a]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := cfg.Routes[0]
+	signature := routeSignature(route)
+	route.UnknownQuota = "exclude"
+	if routeSignature(route) == signature {
+		t.Fatal("unknown_quota must change route signature")
+	}
+}
+
+func TestQuotaPollingConfig(t *testing.T) {
+	want := quotaPollingConfig{RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300, FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500}
+	cfg, err := decodeRouterConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QuotaPolling != want {
+		t.Fatalf("default quota_polling = %#v, want %#v", cfg.QuotaPolling, want)
+	}
+	cfg, err = decodeRouterConfig([]byte("quota_polling:\n  refresh_seconds: 12\n  idle_seconds: 24\n  ttl_seconds: 8\n  max_stale_seconds: 8\n  fetch_timeout_seconds: 2\n  max_concurrent: 4\n  cold_wait_ms: 20\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = quotaPollingConfig{RefreshSeconds: 12, IdleSeconds: 24, TTLSeconds: 8, MaxStaleSeconds: 8, FetchTimeoutSeconds: 2, MaxConcurrent: 4, ColdWaitMS: 20}
+	if cfg.QuotaPolling != want {
+		t.Fatalf("quota_polling = %#v, want %#v", cfg.QuotaPolling, want)
+	}
+	cfg, err = decodeRouterConfig([]byte("quota_polling:\n  max_concurrent: 7\n"))
+	if err != nil || cfg.QuotaPolling.MaxConcurrent != 7 || cfg.QuotaPolling.RefreshSeconds != 60 {
+		t.Fatalf("partial quota_polling = %#v, error = %v", cfg.QuotaPolling, err)
+	}
+	for _, field := range []string{"refresh_seconds", "idle_seconds", "ttl_seconds", "max_stale_seconds", "fetch_timeout_seconds", "max_concurrent", "cold_wait_ms"} {
+		for _, value := range []string{"0", "-1"} {
+			_, err := decodeRouterConfig([]byte("quota_polling:\n  " + field + ": " + value + "\n"))
+			if err == nil || !strings.Contains(err.Error(), "quota_polling") {
+				t.Fatalf("%s: %s: expected quota_polling error, got %v", field, value, err)
+			}
+		}
+	}
+	for _, raw := range []string{"quota_polling:\n  ttl_seconds: 301\n", "quota_polling:\n  unrecognized: 1\n"} {
+		if _, err := decodeRouterConfig([]byte(raw)); err == nil {
+			t.Fatalf("accepted invalid config %q", raw)
+		}
+	}
+}

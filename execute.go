@@ -46,6 +46,9 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	if allCooling {
 		return pluginapi.ExecutorResponse{}, cooldownRouteError(route, retryAfter)
 	}
+	if route.Strategy == routeStrategyHeadroom {
+		return p.executeHeadroom(request, host, route, accounts, identity, bodyInfo, routerRequestID, policy)
+	}
 	var lastErr error
 	var lastTarget string
 	lastStatus := 0
@@ -141,14 +144,18 @@ func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel strin
 	var catalog []accountCredential
 	var catalogErr error
 	for _, target := range route.Targets {
-		if len(target.AllowedAccounts) > 0 {
+		if route.Strategy == routeStrategyHeadroom || len(target.AllowedAccounts) > 0 {
 			catalog, catalogErr = p.accountCatalog(host)
 			break
 		}
 	}
+	// Unavailable credentials with a retry time stay in the snapshot; Preflight excludes them until that time passes.
+	usable := func(account accountCredential) bool {
+		return !account.Disabled && (route.Strategy != routeStrategyHeadroom || !account.Unavailable || !account.NextRetryAfter.IsZero()) && account.ID != "" && account.Provider != ""
+	}
 	byID := make(map[string]accountCredential, len(catalog))
 	for _, account := range catalog {
-		if !account.Disabled && account.ID != "" && account.Provider != "" {
+		if usable(account) {
 			byID[account.ID] = account
 		}
 	}
@@ -156,7 +163,8 @@ func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel strin
 	unavailable := make(map[string]struct{})
 	for _, target := range route.Targets {
 		key := routeKey(target.Model)
-		if len(target.AllowedAccounts) == 0 {
+		unrestricted := len(target.AllowedAccounts) == 0
+		if unrestricted && route.Strategy != routeStrategyHeadroom {
 			eligible[key] = []accountCredential{{}}
 			continue
 		}
@@ -164,9 +172,23 @@ func (p *modelRouterPlugin) routeAccounts(route modelRoute, requestedModel strin
 			unavailable[key] = struct{}{}
 			continue
 		}
-		for _, id := range target.AllowedAccounts {
-			if account, ok := byID[id]; ok && account.supportsModel(targetModel(requestedModel, target.Model)) {
-				eligible[key] = append(eligible[key], account)
+		model := targetModel(requestedModel, target.Model)
+		if route.Strategy == routeStrategyHeadroom {
+			// Headroom keeps catalog order for ties; the allow list only filters.
+			allowed := make(map[string]struct{}, len(target.AllowedAccounts))
+			for _, id := range target.AllowedAccounts {
+				allowed[id] = struct{}{}
+			}
+			for _, account := range catalog {
+				if _, ok := allowed[account.ID]; (unrestricted || ok) && usable(account) && account.supportsModel(model) {
+					eligible[key] = append(eligible[key], account)
+				}
+			}
+		} else {
+			for _, id := range target.AllowedAccounts {
+				if account, ok := byID[id]; ok && account.supportsModel(model) {
+					eligible[key] = append(eligible[key], account)
+				}
 			}
 		}
 		if len(eligible[key]) == 0 {
