@@ -163,7 +163,7 @@ async function loadQuotaStatus(){
         row.insertCell().textContent=credential.provider||'—';
         const state=row.insertCell();state.appendChild(el('span',credential.state||'unknown','status-pill '+(credential.state==='known'?'success':credential.error?'failure':'')));
         const remaining=row.insertCell();
-        (credential.windows||[]).forEach(window=>remaining.appendChild(el('div',(window.name+(window.scope?' ('+window.scope+')':''))+' '+(Number.isFinite(window.remaining)?(window.remaining*100).toFixed(1)+'%':'—')+(window.reset_at?' · resets '+window.reset_at:''))));
+        (credential.windows||[]).forEach(window=>remaining.appendChild(el('div',(window.name+(window.scope?' ('+window.scope+')':''))+' '+(Number.isFinite(window.remaining)?(window.remaining*100).toFixed(1)+'% remaining':'—')+(window.reset_at?' · resets '+window.reset_at:''))));
         if(!remaining.childNodes.length)remaining.textContent=credential.state==='unlimited'?'Unlimited':'—';
         row.insertCell().textContent=(credential.fetched_at||'never')+(credential.age_seconds==null?'':' ('+credential.age_seconds+'s ago)')+' · '+(credential.source||'—');
         row.insertCell().textContent=[credential.error?'Error: '+credential.error:'',credential.backoff_until?'Backoff until '+credential.backoff_until:''].filter(Boolean).join(' · ')||'—';
