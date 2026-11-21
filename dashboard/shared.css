@@ -17,7 +17,6 @@
   --danger: #b83b43;
   --toggle-off: #aebdc6;
   --toggle-knob: #fff;
-  --grid-line: color-mix(in srgb, var(--muted) 6%, transparent);
   --translucent-paper: color-mix(in srgb, var(--paper) 90%, transparent);
   --blue-border: color-mix(in srgb, var(--blue) 40%, var(--line));
   --blue-label: color-mix(in srgb, var(--blue) 72%, var(--ink));
@@ -69,10 +68,6 @@ body {
   margin: 0;
   color: var(--ink);
   background-color: var(--fog);
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 24px 24px;
 }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
