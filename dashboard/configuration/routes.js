@@ -1,5 +1,5 @@
 const STRATEGIES=['priority','round-robin','random','last_known_good','headroom'];
-const DEFAULT_QUOTA_POLLING={refresh_seconds:60,idle_seconds:600,ttl_seconds:60,max_stale_seconds:300,fetch_timeout_seconds:5,max_concurrent:3,cold_wait_ms:1500};
+const DEFAULT_QUOTA_POLLING={refresh_seconds:60,idle_seconds:600,ttl_seconds:60,max_stale_seconds:300,fetch_timeout_seconds:5,max_concurrent:3,cold_wait_ms:1500,default_unknown_quota_percent:50};
 const LKG_KEYS=['success_rate_threshold','minimum_samples','observation_window_minutes'];
 const DEFAULT_LKG={success_rate_threshold:'0.9',minimum_samples:'20',observation_window_minutes:'60'};
 function canonicalIntegerDraft(value){
@@ -169,11 +169,14 @@ function validateFallback(fallback){
 }
 function validateQuotaPolling(polling){
   const errors=[];
+  const unknown=Number(String(polling.default_unknown_quota_percent??'').trim());
+  if(String(polling.default_unknown_quota_percent??'').trim()===''||!Number.isFinite(unknown)||unknown<0||unknown>100)errors.push('Quota polling unknown quota score must be a number from 0 to 100.');
   for(const key of Object.keys(DEFAULT_QUOTA_POLLING)){
+    if(key==='default_unknown_quota_percent')continue;
     const value=integerDraftValue(polling[key]);
     if(!Number.isSafeInteger(value)||value<1)errors.push('Quota polling '+key.replace(/_/g,' ')+' must be a positive integer.');
   }
-  if(integerDraftValue(polling.ttl_seconds)>integerDraftValue(polling.max_stale_seconds))errors.push('Quota polling TTL cannot exceed max stale.');
+  if(integerDraftValue(polling.ttl_seconds)>integerDraftValue(polling.max_stale_seconds))errors.push('Quota polling TTL cannot exceed maximum backoff.');
   return errors;
 }
 function configurationPatchBody(state){
@@ -182,7 +185,7 @@ function configurationPatchBody(state){
     priority:integerDraftValue(state.priority),
     routes:serializeRoutes(state.routes),
     fallback:fallbackFromState(state.fallback),
-    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,integerDraftValue(value)])),
+    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,key==='default_unknown_quota_percent'?Number(String(value).trim()):integerDraftValue(value)])),
     'model-routes':null
   };
 }

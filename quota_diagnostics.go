@@ -75,7 +75,7 @@ func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
 			snapshot := entry.snapshot
 			if !entry.hasSnapshot {
 				snapshot = quotaSnapshot{Err: "pending"}
-			} else if now.Sub(snapshot.FetchedAt) > time.Duration(m.cfg.MaxStaleSeconds)*time.Second {
+			} else if now.Sub(snapshot.FetchedAt) > time.Duration(m.cfg.TTLSeconds)*time.Second {
 				snapshot = quotaSnapshot{Err: "stale", Source: snapshot.Source, FetchedAt: snapshot.FetchedAt, BackoffUntil: snapshot.BackoffUntil}
 			}
 			item := quotaDiagnosticCredential{Provider: entry.credential.Provider, AuthIndex: entry.credential.AuthIndex, Label: entry.credential.Label, State: snapshot.State.String(), Windows: append([]quotaWindow{}, snapshot.Windows...), Source: snapshot.Source, FetchedAt: diagnosticTime(snapshot.FetchedAt), Error: snapshot.Err, BackoffUntil: diagnosticTime(snapshot.BackoffUntil)}

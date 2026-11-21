@@ -106,7 +106,7 @@ test('GET config -> unedited save builds exact PATCH payload', () => {
       { alias: 'lkg', strategy: 'last_known_good', cooldown_seconds: 60, targets: [{ model: 'm-b', weight: 2 }], success_rate_threshold: 0.75, minimum_samples: 5, observation_window_minutes: 15 },
     ],
     fallback: { enabled: true, fallback_on_status: [401, 402, 403, 404, 408, 429, 500, 502, 503, 504], no_fallback_on_status: [], retry_codes: [], no_retry_codes: [], max_attempts: 0, stream_fallback_before_payload: true },
-    quota_polling: { refresh_seconds: 60, idle_seconds: 600, ttl_seconds: 60, max_stale_seconds: 300, fetch_timeout_seconds: 5, max_concurrent: 3, cold_wait_ms: 1500 },
+    quota_polling: { refresh_seconds: 60, idle_seconds: 600, ttl_seconds: 60, max_stale_seconds: 300, fetch_timeout_seconds: 5, max_concurrent: 3, cold_wait_ms: 1500, default_unknown_quota_percent: 50 },
     'model-routes': null,
   });
   assert.deepEqual([...validateRoutes(body.routes)], []);
@@ -193,6 +193,14 @@ test('headroom policies and polling settings round trip and validate', () => {
   assert.deepEqual([...validateQuotaPolling(loaded.quota_polling)], []);
   loaded.quota_polling.ttl_seconds = '31';
   assert.match(validateQuotaPolling(loaded.quota_polling).join(' '), /TTL/);
+  loaded.quota_polling.ttl_seconds = '20';
+  for (const bad of ['', '-1', '100.1', 'abc']) {
+    loaded.quota_polling.default_unknown_quota_percent = bad;
+    assert.match(validateQuotaPolling(loaded.quota_polling).join(' '), /unknown quota score/, bad);
+  }
+  loaded.quota_polling.default_unknown_quota_percent = '35.5';
+  assert.deepEqual([...validateQuotaPolling(loaded.quota_polling)], []);
+  assert.equal(configurationPatchBody(loaded).quota_polling.default_unknown_quota_percent, 35.5);
   loaded.quota_polling.ttl_seconds = '0';
   assert.match(validateQuotaPolling(loaded.quota_polling).join(' '), /positive integer/);
   loaded.routes[0].strategy = 'priority';

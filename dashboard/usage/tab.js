@@ -2,20 +2,24 @@ function setUsageStatus(message,tone='info'){
   usageStatusEl.textContent=message;
   usageStatusEl.dataset.tone=tone;
 }
+const TAB_PANELS={configuration:'configuration-tab',usage:'usage-tab',quota:'quota-tab'};
+function tabName(tab){return tab.id.replace(/-tab$/,'')}
 function activateTab(name,moveFocus=false){
-  const usage=name==='usage';
+  const usage=name==='usage',quota=name==='quota';
   tabs.forEach(tab=>{
-    const selected=tab.id===(usage?'usage-tab':'configuration-tab');
+    const selected=tab.id===TAB_PANELS[name];
     tab.setAttribute('aria-selected',String(selected));
     tab.tabIndex=selected?0:-1;
     if(selected&&moveFocus)tab.focus();
   });
-  configurationPanelEl.hidden=usage;
+  configurationPanelEl.hidden=usage||quota;
   usagePanelEl.hidden=!usage;
+  quotaPanelEl.hidden=!quota;
   updateConfigurationActionsClearance();
   usageState.active=usage;
   if(usage)startUsageDashboard();
-  else{clearChartActive(false);stopUsagePolling();if(!workspaceEl.hidden)loadQuotaStatus()}
+  else{clearChartActive(false);stopUsagePolling()}
+  if(quota&&!workspaceEl.hidden)loadQuotaStatus();
 }
 function handleTabKey(event){
   const current=tabs.indexOf(event.currentTarget);
@@ -26,7 +30,7 @@ function handleTabKey(event){
   else if(event.key==='End')next=tabs.length-1;
   else return;
   event.preventDefault();
-  activateTab(tabs[next].id==='usage-tab'?'usage':'configuration',true);
+  activateTab(tabName(tabs[next]),true);
 }
 function stopUsagePolling(){
   window.clearTimeout(usageState.filterTimer);

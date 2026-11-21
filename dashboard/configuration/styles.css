@@ -162,6 +162,7 @@ input[type="text"], input[type="number"], input[type="password"], select {
 .target-help:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .target-empty { padding: 10px; color: var(--danger); font-size: 12px; background: var(--danger-soft); border: 1px dashed var(--danger-border); border-radius: 7px; }
 #configuration-panel { padding-bottom: var(--configuration-actions-clearance); }
+#quota-panel { padding-bottom: var(--configuration-actions-clearance); }
 .configuration-actions-dock {
   position: fixed;
   right: 0;

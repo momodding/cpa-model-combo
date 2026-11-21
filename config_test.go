@@ -606,7 +606,7 @@ func TestHeadroomConfig(t *testing.T) {
 }
 
 func TestQuotaPollingConfig(t *testing.T) {
-	want := quotaPollingConfig{RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300, FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500}
+	want := quotaPollingConfig{RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300, FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500, DefaultUnknownQuotaPercent: 50}
 	cfg, err := decodeRouterConfig(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -618,7 +618,7 @@ func TestQuotaPollingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = quotaPollingConfig{RefreshSeconds: 12, IdleSeconds: 24, TTLSeconds: 8, MaxStaleSeconds: 8, FetchTimeoutSeconds: 2, MaxConcurrent: 4, ColdWaitMS: 20}
+	want = quotaPollingConfig{RefreshSeconds: 12, IdleSeconds: 24, TTLSeconds: 8, MaxStaleSeconds: 8, FetchTimeoutSeconds: 2, MaxConcurrent: 4, ColdWaitMS: 20, DefaultUnknownQuotaPercent: 50}
 	if cfg.QuotaPolling != want {
 		t.Fatalf("quota_polling = %#v, want %#v", cfg.QuotaPolling, want)
 	}
@@ -633,6 +633,14 @@ func TestQuotaPollingConfig(t *testing.T) {
 				t.Fatalf("%s: %s: expected quota_polling error, got %v", field, value, err)
 			}
 		}
+	}
+	for _, value := range []string{"-1", "100.5", ".nan"} {
+		if _, err := decodeRouterConfig([]byte("quota_polling:\n  default_unknown_quota_percent: " + value + "\n")); err == nil {
+			t.Fatalf("accepted default_unknown_quota_percent %s", value)
+		}
+	}
+	if cfg, err := decodeRouterConfig([]byte("quota_polling:\n  default_unknown_quota_percent: 0\n")); err != nil || cfg.QuotaPolling.DefaultUnknownQuotaPercent != 0 {
+		t.Fatalf("explicit zero = %v, %v", cfg.QuotaPolling.DefaultUnknownQuotaPercent, err)
 	}
 	for _, raw := range []string{"quota_polling:\n  ttl_seconds: 301\n", "quota_polling:\n  unrecognized: 1\n"} {
 		if _, err := decodeRouterConfig([]byte(raw)); err == nil {

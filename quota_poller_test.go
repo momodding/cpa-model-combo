@@ -82,7 +82,8 @@ func TestQuotaPollerTTLBackoffStaleAndReconcile(t *testing.T) {
 		<-done
 	}
 	got := get()
-	if got.State != quotaKnown || got.BackoffUntil.IsZero() {
+	// Past TTL a failed refresh must not keep serving the last observation.
+	if got.State != quotaUnknown || got.Err != "stale" || got.BackoffUntil.IsZero() {
 		t.Fatalf("retry snapshot = %+v", got)
 	}
 	if calls.Load() != 2 {
