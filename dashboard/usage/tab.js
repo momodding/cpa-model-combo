@@ -15,7 +15,7 @@ function activateTab(name,moveFocus=false){
   updateConfigurationActionsClearance();
   usageState.active=usage;
   if(usage)startUsageDashboard();
-  else{clearChartActive(false);stopUsagePolling()}
+  else{clearChartActive(false);stopUsagePolling();if(!workspaceEl.hidden)loadQuotaStatus()}
 }
 function handleTabKey(event){
   const current=tabs.indexOf(event.currentTarget);

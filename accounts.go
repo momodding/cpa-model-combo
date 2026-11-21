@@ -29,6 +29,8 @@ type accountCredential struct {
 	AuthIndex           string         `json:"auth_index"`
 	Provider            string         `json:"provider"`
 	Label               string         `json:"label"`
+	ProjectID           string         `json:"-"`
+	Account             string         `json:"-"`
 	Disabled            bool           `json:"disabled"`
 	Unavailable         bool           `json:"unavailable"`
 	NextRetryAfter      time.Time      `json:"next_retry_after,omitempty"`
@@ -86,6 +88,8 @@ func (p *modelRouterPlugin) accountCatalog(host modelHost) ([]accountCredential,
 			AuthIndex:           strings.TrimSpace(item.AuthIndex),
 			Provider:            provider,
 			Label:               safeCredentialLabel(entry.Label, entry.Email),
+			ProjectID:           strings.TrimSpace(entry.ProjectID),
+			Account:             strings.TrimSpace(entry.Account),
 			Disabled:            entry.Disabled,
 			Unavailable:         entry.Unavailable,
 			NextRetryAfter:      entry.NextRetryAfter,

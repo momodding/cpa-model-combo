@@ -77,6 +77,9 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 	if allCooling {
 		return cooldownRouteError(route, retryAfter)
 	}
+	if route.Strategy == routeStrategyHeadroom {
+		return p.streamHeadroom(ctx, request, pluginStreamID, host, onPayload, route, accounts, identity, bodyInfo, routerRequestID, policy)
+	}
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
 	for key := range unavailable {

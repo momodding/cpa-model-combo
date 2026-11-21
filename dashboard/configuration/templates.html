@@ -30,12 +30,20 @@
       <div class="field-grid">
         <div class="field">
           <label>Selection strategy</label>
-          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option><option value="random">Random</option><option value="last_known_good">Last known good</option></select>
+          <select data-field="strategy"><option value="priority">Priority order</option><option value="round-robin">Round robin</option><option value="random">Random</option><option value="last_known_good">Last known good</option><option value="headroom">Quota headroom</option></select>
         </div>
         <div class="field">
           <label>Cooldown seconds</label>
           <input type="number" data-field="cooldown_seconds" min="0" step="1" inputmode="numeric">
           <small>Zero uses the 60-second default.</small>
+        </div>
+      </div>
+
+      <div class="field-grid" data-headroom-fields hidden>
+        <div class="field">
+          <label>Unknown quota</label>
+          <select data-field="unknown_quota"><option value="priority">Try after known quota</option><option value="exclude">Exclude</option><option value="last">Try last</option></select>
+          <small>Choose how to handle accounts without quota data.</small>
         </div>
       </div>
 

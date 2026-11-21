@@ -17,6 +17,7 @@ const (
 	routeStrategyRoundRobin    = "round-robin"
 	routeStrategyRandom        = "random"
 	routeStrategyLastKnownGood = "last_known_good"
+	routeStrategyHeadroom      = "headroom"
 	defaultCooldownSeconds     = 60
 	defaultRetentionDays       = 365
 	maxRetentionDays           = 3650
@@ -52,6 +53,7 @@ type lastKnownGoodPolicy struct {
 type modelRoute struct {
 	Alias           string
 	Strategy        string
+	UnknownQuota    string
 	CooldownSeconds int
 	LastKnownGood   lastKnownGoodPolicy
 	Targets         []modelTarget
@@ -66,6 +68,7 @@ type modelTargetYAML struct {
 type modelRouteYAML struct {
 	Alias                    string             `yaml:"alias" json:"alias"`
 	Strategy                 string             `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	UnknownQuota             *string            `yaml:"unknown_quota,omitempty" json:"unknown_quota,omitempty"`
 	CooldownSeconds          *int               `yaml:"cooldown_seconds,omitempty" json:"cooldown_seconds,omitempty"`
 	LegacyCooldownSeconds    *int               `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 	SuccessRateThreshold     *float64           `yaml:"success_rate_threshold,omitempty" json:"success_rate_threshold,omitempty"`
@@ -92,10 +95,21 @@ func (ids *accountIDList) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+type quotaPollingConfig struct {
+	RefreshSeconds      int `yaml:"refresh_seconds" json:"refresh_seconds"`
+	IdleSeconds         int `yaml:"idle_seconds" json:"idle_seconds"`
+	TTLSeconds          int `yaml:"ttl_seconds" json:"ttl_seconds"`
+	MaxStaleSeconds     int `yaml:"max_stale_seconds" json:"max_stale_seconds"`
+	FetchTimeoutSeconds int `yaml:"fetch_timeout_seconds" json:"fetch_timeout_seconds"`
+	MaxConcurrent       int `yaml:"max_concurrent" json:"max_concurrent"`
+	ColdWaitMS          int `yaml:"cold_wait_ms" json:"cold_wait_ms"`
+}
+
 type routerConfig struct {
 	Enabled            bool
 	DataPath           string
 	RetentionDays      int
+	QuotaPolling       quotaPollingConfig
 	Routes             []modelRoute
 	FallbackOnStatus   []int
 	FallbackDisabled   bool
@@ -149,6 +163,7 @@ type routerConfigYAML struct {
 	Routes        *[]modelRouteYAML   `yaml:"routes,omitempty"`
 	LegacyRoutes  *[]modelRouteYAML   `yaml:"model-routes,omitempty"`
 	Fallback      *fallbackConfigYAML `yaml:"fallback,omitempty"`
+	QuotaPolling  quotaPollingConfig  `yaml:"quota_polling,omitempty"`
 }
 
 func containsUnsupportedAccountAwareSchema(node *yaml.Node) bool {
@@ -195,7 +210,10 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 			}
 		}
 	}
-	wire := routerConfigYAML{}
+	wire := routerConfigYAML{QuotaPolling: quotaPollingConfig{
+		RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300,
+		FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500,
+	}}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		decoder := yaml.NewDecoder(bytes.NewReader(raw))
 		decoder.KnownFields(true)
@@ -212,6 +230,13 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	}
 	if wire.Routes != nil && wire.LegacyRoutes != nil {
 		return routerConfig{}, errors.New("model-combo config must not contain both routes and model-routes")
+	}
+	polling := wire.QuotaPolling
+	if polling.RefreshSeconds <= 0 || polling.IdleSeconds <= 0 || polling.TTLSeconds <= 0 || polling.MaxStaleSeconds <= 0 || polling.FetchTimeoutSeconds <= 0 || polling.MaxConcurrent <= 0 || polling.ColdWaitMS <= 0 {
+		return routerConfig{}, errors.New("quota_polling values must be positive")
+	}
+	if polling.TTLSeconds > polling.MaxStaleSeconds {
+		return routerConfig{}, errors.New("quota_polling.ttl_seconds must be <= max_stale_seconds")
 	}
 	dataPath := strings.TrimSpace(wire.DataPath)
 	if dataPath == "" {
@@ -299,6 +324,14 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		if route.Strategy == "" {
 			route.Strategy = routeStrategyPriority
 		}
+		if item.UnknownQuota != nil {
+			route.UnknownQuota = strings.ToLower(strings.TrimSpace(*item.UnknownQuota))
+			if route.Strategy != routeStrategyHeadroom || (route.UnknownQuota != "priority" && route.UnknownQuota != "exclude" && route.UnknownQuota != "last") {
+				return routerConfig{}, fmt.Errorf("routes[%d] %q: invalid unknown_quota policy", index, route.Alias)
+			}
+		} else if route.Strategy == routeStrategyHeadroom {
+			route.UnknownQuota = "priority"
+		}
 		if route.CooldownSeconds == 0 {
 			route.CooldownSeconds = defaultCooldownSeconds
 		}
@@ -369,6 +402,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		Enabled:            enabled,
 		DataPath:           absoluteDataPath,
 		RetentionDays:      retentionDays,
+		QuotaPolling:       polling,
 		Routes:             routes,
 		FallbackOnStatus:   fallbackOnStatus,
 		FallbackDisabled:   fallbackDisabled,
@@ -408,8 +442,8 @@ func validateRoute(route modelRoute, index int, aliases map[string]int) error {
 	if previous, duplicate := aliases[routeKey(route.Alias)]; duplicate {
 		return fmt.Errorf("routes[%d] %q: duplicate alias (also at index %d)", index, route.Alias, previous)
 	}
-	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin && route.Strategy != routeStrategyRandom && route.Strategy != routeStrategyLastKnownGood {
-		return fmt.Errorf("routes[%d] %q: strategy must be %q, %q, %q, or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin, routeStrategyRandom, routeStrategyLastKnownGood)
+	if route.Strategy != routeStrategyPriority && route.Strategy != routeStrategyRoundRobin && route.Strategy != routeStrategyRandom && route.Strategy != routeStrategyLastKnownGood && route.Strategy != routeStrategyHeadroom {
+		return fmt.Errorf("routes[%d] %q: strategy must be %q, %q, %q, %q, or %q", index, route.Alias, routeStrategyPriority, routeStrategyRoundRobin, routeStrategyRandom, routeStrategyLastKnownGood, routeStrategyHeadroom)
 	}
 	if route.CooldownSeconds < 0 {
 		return fmt.Errorf("routes[%d] %q: cooldown_seconds must be >= 0", index, route.Alias)
@@ -513,6 +547,8 @@ func routeSignature(route modelRoute) string {
 	builder.WriteString(routeKey(route.Alias))
 	builder.WriteByte('\n')
 	builder.WriteString(route.Strategy)
+	builder.WriteByte('\n')
+	builder.WriteString(route.UnknownQuota)
 	builder.WriteByte('\n')
 	builder.WriteString(strconv.Itoa(route.CooldownSeconds))
 	for _, target := range route.Targets {

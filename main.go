@@ -25,6 +25,7 @@ type modelRouterPlugin struct {
 	modelsDevFetcher modelsDevCatalogFetcher
 	priceSync        *priceSyncState
 	credentials      *credentialSnapshots
+	quota            *QuotaPollingManager
 }
 
 var (
@@ -73,7 +74,16 @@ func newModelRouterPlugin(configYAML []byte, previous *modelRouterPlugin) (*mode
 			return nil, pluginapi.Metadata{}, err
 		}
 	}
-	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync, credentials: credentials}
+	var quota *QuotaPollingManager
+	if previous != nil {
+		quota = previous.quota
+	}
+	if quota == nil {
+		quota = newQuotaPollingManager(cfg)
+	} else {
+		quota.Reconcile(cfg)
+	}
+	plugin := &modelRouterPlugin{config: cfg, runtime: runtime, store: store, attribution: attribution, modelsDevFetcher: fetcher, priceSync: priceSync, credentials: credentials, quota: quota}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
 		Version:          pluginVersion,

@@ -8,8 +8,8 @@ import { test } from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '../../dashboard/configuration/routes.js'), 'utf8');
 
-const { normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody } = vm.runInNewContext(
-  `${source}\n({ normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody })`,
+const { normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody, validateQuotaPolling } = vm.runInNewContext(
+  `${source}\n({ normalizeRoute, serializeRoutes, validateRoutes, configFromResponse, configurationPatchBody, validateQuotaPolling })`,
   { DEFAULT_FALLBACK_ON_STATUS: '401, 402, 403, 404, 408, 429, 500, 502, 503, 504' },
 );
 
@@ -56,8 +56,8 @@ test('unedited last_known_good route serializes its stored values unchanged', ()
   assert.deepEqual([...validateRoutes(serializeRoutes([loaded]))], []);
 });
 
-test('all four strategies validate', () => {
-  for (const strategy of ['priority', 'round-robin', 'random', 'last_known_good']) {
+test('all five strategies validate', () => {
+  for (const strategy of ['priority', 'round-robin', 'random', 'last_known_good', 'headroom']) {
     const route = normalizeRoute({ alias: 'r-' + strategy, strategy, cooldown_seconds: 60, targets }, 0);
     const payload = serializeRoutes([route]);
     assert.deepEqual([...validateRoutes(payload)], [], strategy);
@@ -106,6 +106,7 @@ test('GET config -> unedited save builds exact PATCH payload', () => {
       { alias: 'lkg', strategy: 'last_known_good', cooldown_seconds: 60, targets: [{ model: 'm-b', weight: 2 }], success_rate_threshold: 0.75, minimum_samples: 5, observation_window_minutes: 15 },
     ],
     fallback: { enabled: true, fallback_on_status: [401, 402, 403, 404, 408, 429, 500, 502, 503, 504], no_fallback_on_status: [], retry_codes: [], no_retry_codes: [], max_attempts: 0, stream_fallback_before_payload: true },
+    quota_polling: { refresh_seconds: 60, idle_seconds: 600, ttl_seconds: 60, max_stale_seconds: 300, fetch_timeout_seconds: 5, max_concurrent: 3, cold_wait_ms: 1500 },
     'model-routes': null,
   });
   assert.deepEqual([...validateRoutes(body.routes)], []);
@@ -155,8 +156,8 @@ test('invalid target account lists are rejected with target paths', () => {
 
 test('target eligibility respects unknown, disabled and known model support', () => {
   const tab = readFileSync(join(here, '../../dashboard/configuration/tab.js'), 'utf8');
-  const state = { accounts: [], catalogLoaded: true, priority: '0', fallback: {} };
-  const context = { state, routesEl: { addEventListener() {} }, validateRoutes, validateFallback: () => [], Set, Map };
+  const state = { accounts: [], catalogLoaded: true, priority: '0', fallback: {}, quota_polling: configFromResponse({}).quota_polling };
+  const context = { state, routesEl: { addEventListener() {} }, validateRoutes, validateFallback: () => [], validateQuotaPolling, Set, Map };
   const { validateClient, modelsForRoute } = vm.runInNewContext(`${tab}\n({ validateClient, modelsForRoute })`, context);
   const route = { alias: 'r', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'wanted', weight: 1, allowed_accounts: ['one'] }] };
   state.accounts = [{ id: 'one', models: [], model_support_unknown: true }, { id: 'two', models: [{ id: 'discovered' }] }];
@@ -181,4 +182,20 @@ test('configuration snapshot tracks target and account order', () => {
   const saved = JSON.parse(JSON.stringify(serializeRoutes(state.routes)));
   const reloaded = normalizeRoute(saved[0], 0);
   assert.deepEqual(JSON.parse(JSON.stringify(reloaded.targets.map(target => [target.model, target.allowed_accounts]))), [['b', []], ['a', ['b', 'a']]]);
+});
+
+test('headroom policies and polling settings round trip and validate', () => {
+  const loaded = configFromResponse({ routes: [{ alias: 'r', strategy: 'headroom', unknown_quota: 'exclude', targets }], quota_polling: { ttl_seconds: 20, max_stale_seconds: 30 } });
+  let body = configurationPatchBody(loaded);
+  assert.equal(body.routes[0].unknown_quota, 'exclude');
+  assert.equal(body.quota_polling.ttl_seconds, 20);
+  assert.deepEqual([...validateRoutes(body.routes)], []);
+  assert.deepEqual([...validateQuotaPolling(loaded.quota_polling)], []);
+  loaded.quota_polling.ttl_seconds = '31';
+  assert.match(validateQuotaPolling(loaded.quota_polling).join(' '), /TTL/);
+  loaded.quota_polling.ttl_seconds = '0';
+  assert.match(validateQuotaPolling(loaded.quota_polling).join(' '), /positive integer/);
+  loaded.routes[0].strategy = 'priority';
+  body = configurationPatchBody(loaded);
+  assert.equal('unknown_quota' in body.routes[0], false);
 });

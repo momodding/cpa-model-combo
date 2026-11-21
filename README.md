@@ -4,7 +4,7 @@
 [![release](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml/badge.svg)](https://github.com/momodding/cpa-model-combo/actions/workflows/release.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`cpa-model-combo` is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-routing and executor plugin. It routes configured model aliases through priority routing, round-robin routing, cooldown, and failover.
+`cpa-model-combo` is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) model-routing and executor plugin. It routes configured model aliases through configurable strategies, cooldown, and failover.
 
 ## Fork provenance
 
@@ -15,7 +15,7 @@ The plugin does not call providers directly. For each selected physical model it
 ## Features
 
 - Expose logical model aliases through CPA's model registry.
-- Route an alias to an ordered priority pool or a round-robin pool.
+- Route an alias to an ordered priority pool, a round-robin pool, or a quota-aware headroom pool.
 - Assign round-robin weights to give models with multiple CPA providers a proportional outer share.
 - Fail over on quota, rate-limit, auth, provider, server, and recognized transport failures.
 - Cool failed targets in memory and skip them on later requests.
@@ -46,6 +46,14 @@ plugins:
       priority: 100
       data_path: "/CLIProxyAPI/plugins/cpa-model-combo.db"
       retention_days: 365
+      quota_polling:
+        refresh_seconds: 60
+        idle_seconds: 600
+        ttl_seconds: 60
+        max_stale_seconds: 300
+        fetch_timeout_seconds: 5
+        max_concurrent: 3
+        cold_wait_ms: 1500
       routes:
         - alias: auto
           strategy: priority
@@ -67,6 +75,13 @@ plugins:
               weight: 3
             - model: provider-b/model
               weight: 1
+
+        - alias: most-headroom
+          strategy: headroom
+          unknown_quota: priority
+          targets:
+            - model: gpt-5.4-mini
+            - model: claude-sonnet-4-5
 ```
 
 `plugins.enabled` and `plugins.configs.model-combo.enabled` must both be true. Install only versioned `model-combo-v<version>` libraries with the host extension: `.so`, `.dylib`, or `.dll`; `v1.0.1` uses `model-combo-v1.0.1.<ext>`.
@@ -84,7 +99,7 @@ When `data_path` is omitted, the plugin locates the CPA root from the loaded lib
 
 Usage records are committed synchronously. On supported CPA versions, asynchronous native usage delivery survives request completion. Usage history, prices, and dashboard preferences survive a normal CPA restart when the same database file remains mounted and writable. Retention deletes expired rows; high-volume installations should monitor the database file and choose retention based on request rate and available storage.
 
-Round-robin weights are manual outer-routing shares. CPA selects the credential for unrestricted routes; restricted routes pin execution to an allowed credential.
+Round-robin weights are manual outer-routing shares. For priority and round-robin routes, CPA selects the credential for unrestricted routes; restricted routes pin execution to an allowed credential. Headroom routes select and pin an eligible credential themselves.
 
 ### Upgrading to CPA v8 and rolling back
 
@@ -100,7 +115,7 @@ No accounts selected means all accounts allowed. With selections, model choices 
 
 The fixed **Save changes** and **Discard and reload** dock slides into view only while the current draft differs from the last configuration loaded or saved through CPA. Reverting every edit hides it again; invalid numeric drafts keep it visible so validation feedback and discard remain available. The dock reserves enough page space to avoid covering the final route and moves notifications above itself.
 
-**Save changes** checks duplicate aliases, recursive routes, empty pools, duplicate targets, and cooldown values with the plugin's Go configuration parser before applying a shallow patch through CPA. The patch updates `enabled`, `priority`, and `routes` without replacing plugin-store metadata or unrelated config fields. The same page is available directly at:
+**Save changes** checks duplicate aliases, recursive routes, empty pools, duplicate targets, and cooldown values with the plugin's Go configuration parser before applying a shallow patch through CPA. The patch updates `enabled`, `priority`, `routes`, and `quota_polling` without replacing plugin-store metadata or unrelated config fields. The same page is available directly at:
 
 ```text
 /v0/resource/plugins/model-combo/config
@@ -125,7 +140,8 @@ See [docs/usage-tracking.md](docs/usage-tracking.md) for the data contract, oper
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `alias` | yes | Client-visible model name. Matching is case-insensitive. Thinking suffixes are not allowed on aliases. |
-| `strategy` | no | `priority` by default, or `round-robin`. |
+| `strategy` | no | `priority` by default; also accepts `round-robin`, `random`, `last_known_good`, or `headroom`. |
+| `unknown_quota` | no | Headroom routes only: `priority` (default), `last`, or `exclude`; see below. |
 | `cooldown_seconds` | no | Seconds a failed target remains unavailable. Omitted or zero uses 60 seconds. |
 | `allowed_accounts` | no | Ordered, unique, case-sensitive credential IDs. Omitted or empty means unrestricted; clearing the selection removes the restriction. |
 | `targets` | yes | Ordered physical model target objects. Each object has a required `model` and an integer `weight` from 1 through 1000000; omitted weight defaults to 1. Empty and duplicate targets are rejected. |
@@ -146,6 +162,45 @@ The plugin fails over for these numeric statuses:
 `400` and `422` are treated as request errors and returned immediately by default. CPA's structured `model_not_found` error reporting an unknown or missing provider is an exception: its `400` cools the unavailable target and moves to the next candidate. An explicit `fallback.no_fallback_on_status: [400]` also excludes this exception. Cancellation and deadline errors never fail over. When the host callback loses a numeric status, the plugin fails over only for recognized quota, auth-unavailable, model/provider-unavailable, timeout, DNS, connection, broken-pipe, reset, or EOF messages. Ambiguous errors stop the route to avoid repeating a bad request against every provider.
 
 A stream can move to another permitted account or target only when start-up fails before any payload bytes arrive. Startup errors preserve their HTTP status and error details before the stream begins. A failure after payload arrival is returned without splicing a second provider stream into the first, including when an incomplete frame is still buffered.
+
+### Quota-aware headroom
+
+Headroom ranks eligible target/credential pairs by their lowest applicable remaining quota fraction, highest first. Account-wide windows and windows matching the model family apply; unrelated windows do not. A depleted applicable window excludes the pair. Partial snapshots are scored using their parsed windows; unlimited snapshots score 1 and follow known or partial snapshots with the same score. Ties otherwise retain target and account order. Cooldowns, account restrictions, fallback and attempt limits still apply. A valid session affinity binding can move its eligible credential to the front.
+
+`unknown_quota` controls candidates whose quota is unavailable, stale, pending, unsupported, or has no applicable window:
+
+- `priority` (default) and `last` currently both place unknown candidates after scored candidates, in target/account order. If all candidates are unknown, this is priority order.
+- `exclude` removes unknown candidates. If no candidates remain, the route returns the existing all-unavailable error.
+
+Quota is fetched through CPA's local management API, not inferred from usage callbacks or response headers. Set these environment variables on the CPA process:
+
+| Variable | Meaning |
+| --- | --- |
+| `MODEL_COMBO_MANAGEMENT_KEY` | Required management API key. If absent, quota is unknown with reason `management_key_missing`. Do not put the key in plugin YAML. |
+| `MODEL_COMBO_MANAGEMENT_URL` | Defaults to `http://127.0.0.1:8317`. Only HTTP(S) URLs with host `127.0.0.1`, `::1`, or `localhost` are accepted; paths other than `/`, credentials, queries, fragments, and redirects are not supported. An invalid URL gives reason `management_url_invalid`. |
+
+CPA does not expose a management API callback or its listener address to the plugin, so a reachable loopback listener and the environment key are required. The key is sent to the local management API, not to providers or dashboard diagnostics. CPA substitutes provider tokens for the `$TOKEN$` placeholder in the fixed upstream requests.
+
+| Provider | Quota support |
+| --- | --- |
+| Claude | OAuth usage: five-hour and seven-day account windows, plus Opus and Sonnet windows where present. |
+| Codex | Usage primary and secondary windows; the account ID header is included when available. |
+| Antigravity | Model-family quota buckets; requires `project_id` in the credential catalog. If missing, quota is unknown (`missing_project_id`). |
+| Other providers, including Gemini CLI, Kimi, xAI, Devin, Meta, API-key and plugin providers | Unknown (`unsupported_provider`). The typed CPA auth catalog does not expose plugin quota capabilities or quota plugin IDs, so plugin quota endpoints cannot currently be discovered. |
+
+The optional `quota_polling` block in the example shows all defaults. Every value must be positive, and `ttl_seconds` must not exceed `max_stale_seconds`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `refresh_seconds` | 60 | Background refresh interval for active credentials. |
+| `idle_seconds` | 600 | Remove credentials unused for longer than this interval. |
+| `ttl_seconds` | 60 | Age at which a request triggers a refresh. |
+| `max_stale_seconds` | 300 | Maximum usable snapshot age and retry-backoff cap. Older snapshots become unknown. |
+| `fetch_timeout_seconds` | 5 | Timeout for each shared quota fetch. |
+| `max_concurrent` | 3 | Maximum simultaneous quota fetches. |
+| `cold_wait_ms` | 1500 | Maximum wait for initially missing snapshots before routing with available data. |
+
+Polling starts lazily for headroom requests and stops when no active credentials remain or no headroom routes are configured. Transient failures retain the previous snapshot until it becomes too stale and back off; authentication, unsupported and parse errors produce unknown quota. The Configuration page shows quota diagnostics, including state, windows, fetch age and error reasons, and refreshes the panel on opening and saving.
 
 ### Thinking suffixes
 

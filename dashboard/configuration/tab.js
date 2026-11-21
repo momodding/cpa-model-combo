@@ -3,9 +3,11 @@ function configurationSnapshot(){
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
 		fallback:Object.fromEntries(Object.entries(state.fallback).map(([key,value])=>[key,key==='enabled'||key==='stream_fallback_before_payload'?Boolean(value):String(value).trim()])),
+    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,canonicalIntegerDraft(value)])),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
+      unknown_quota:route.strategy==='headroom'?(route.unknown_quota??'priority'):undefined,
       cooldown_seconds:canonicalIntegerDraft(route.cooldown_seconds),
       success_rate_threshold:route.success_rate_threshold===undefined?undefined:String(route.success_rate_threshold).trim(),
       minimum_samples:route.minimum_samples===undefined?undefined:canonicalIntegerDraft(route.minimum_samples),
@@ -140,6 +142,28 @@ function updateModelStatus(){
     modelStatusEl.removeAttribute('title');
   }
 }
+async function loadQuotaStatus(){
+  const panel=document.getElementById('quota-status');
+  panel.textContent='Loading quota status…';
+  try{
+    const data=await requestManagementJSON('/v0/management/plugins/model-combo/quota-status');
+    panel.replaceChildren();
+    const add=(tag,text)=>{const el=document.createElement(tag);el.textContent=text;panel.appendChild(el)};
+    const polling=data.polling||{};
+    add('p','Polling: '+(polling.running?'running':'stopped')+' · Active credentials: '+(polling.active_keys??0)+' · Last tick: '+(polling.last_tick||'never'));
+    const credentials=Array.isArray(data.credentials)?data.credentials:[];
+    if(!credentials.length)add('p','No active quota credentials.');
+    credentials.forEach(credential=>{
+      add('p',[credential.label,credential.auth_index,credential.provider,credential.state,'Source: '+(credential.source||'—'),'Fetched: '+(credential.fetched_at||'never'),'Age: '+(credential.age_seconds==null?'—':credential.age_seconds+'s'),credential.error?'Error: '+credential.error:'',credential.backoff_until?'Backoff until: '+credential.backoff_until:''].filter(Boolean).join(' · '));
+      (credential.windows||[]).forEach(window=>add('p','  '+window.name+(window.scope?' ('+window.scope+')':'')+': '+(window.remaining*100).toFixed(1)+'% remaining'+(window.reset_at?' · Resets: '+window.reset_at:'')));
+    });
+    (data.routes||[]).forEach(route=>{
+      const describe=selection=>[selection.model,selection.credential?.label||selection.credential?.auth_index,selection.state,selection.score==null?'':String(selection.score),selection.reason].filter(Boolean).join(' · ');
+      add('p','Route '+route.alias+': '+(route.selection?describe(route.selection):'No selection'));
+      (route.skips||[]).forEach(skip=>add('p','Skipped: '+describe(skip)));
+    });
+  }catch(error){panel.textContent='Quota status unavailable: '+error.message}
+}
 async function loadConfiguration(){
   setBusy(true);
   setAuthNote('Loading configuration…');
@@ -160,6 +184,8 @@ async function loadConfiguration(){
     state.priority=loaded.priority;
     state.routes=loaded.routes;
     state.fallback=loaded.fallback;
+    state.quota_polling=loaded.quota_polling;
+    document.querySelectorAll('[data-quota-field]').forEach(el=>{el.value=state.quota_polling[el.dataset.quotaField]});
     for(const[key,value]of Object.entries(state.fallback)){
       const el=document.querySelector(`[data-fallback-field="${key}"]`);
       if(el){if(el.type==='checkbox')el.checked=value;else el.value=value}
@@ -177,6 +203,7 @@ async function loadConfiguration(){
     renderRoutes();
     workspaceEl.hidden=false;
     captureConfigurationBaseline();
+    loadQuotaStatus();
     hideFallbackKeyInput();
     setAuthNote('Connected with the CPAMC session.');
     if(state.catalogError)showToast('Configuration loaded, but CPA models are unavailable. '+state.catalogError,'error');
@@ -263,6 +290,8 @@ function createRouteCard(route,index){
   card.querySelector('[data-field="strategy"]').value=route.strategy;
   card.querySelector('[data-field="cooldown_seconds"]').value=route.cooldown_seconds;
   card.querySelector('[data-lkg-fields]').hidden=route.strategy!=='last_known_good';
+  card.querySelector('[data-headroom-fields]').hidden=route.strategy!=='headroom';
+  card.querySelector('[data-field="unknown_quota"]').value=route.unknown_quota??'priority';
   for(const key of LKG_KEYS)card.querySelector('[data-field="'+key+'"]').value=route[key]??(route.strategy==='last_known_good'?DEFAULT_LKG[key]:'');
   card.querySelector('[data-action="up"]').disabled=index===0;
   card.querySelector('[data-action="down"]').disabled=index===state.routes.length-1;
@@ -497,7 +526,7 @@ function validateClient(routes){
     });
   }));
   if(!/^-?\d+$/.test(state.priority.trim()))errors.push('Priority must be an integer.');
-  return errors.concat(validateFallback(state.fallback));
+  return errors.concat(validateFallback(state.fallback),validateQuotaPolling(state.quota_polling));
 }
 async function saveConfiguration(){
   if(state.busy||!state.dirty)return;
@@ -512,6 +541,7 @@ async function saveConfiguration(){
     saveStateEl.textContent='Saving…';
     await requestManagementJSON(CONFIG_API,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(configurationPatchBody(state))});
     captureConfigurationBaseline(submittedSnapshot);
+    loadQuotaStatus();
     showToast('Model routes saved; config changes apply asynchronously.','success');
   }catch(error){
     refreshDirty();
@@ -529,4 +559,5 @@ function initializeConfigurationEvents() {
   reloadEl.addEventListener('click',()=>{if(!state.dirty||window.confirm('Discard unsaved changes and reload from CPA?'))loadConfiguration()});
   saveEl.addEventListener('click',saveConfiguration);
   document.querySelectorAll('[data-fallback-field]').forEach(el=>el.addEventListener(el.type==='checkbox'?'change':'input',()=>{state.fallback[el.dataset.fallbackField]=el.type==='checkbox'?el.checked:el.value;refreshDirty()}));
+  document.querySelectorAll('[data-quota-field]').forEach(el=>el.addEventListener('input',()=>{state.quota_polling[el.dataset.quotaField]=el.value;refreshDirty()}));
 }

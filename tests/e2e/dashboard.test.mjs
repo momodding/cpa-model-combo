@@ -404,6 +404,53 @@ test('account restrictions filter targets and reject stale selections', { timeou
   }
 });
 
+test('headroom settings persist and quota status refreshes on open and save', { timeout: 120_000 }, async () => {
+  const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
+  const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  let saved, quotaRequests = 0;
+  try {
+    await page.route('**/v0/management/plugins/model-combo/accounts', route => route.fulfill({ json: { credentials: [{ id: 'account-a', provider: 'codex', label: 'Account A', models: [{ id: 'model-a' }] }] } }));
+    await page.route('**/v0/management/plugins/model-combo/config', route => {
+      if (route.request().method() === 'PATCH') { saved = route.request().postDataJSON(); return route.fulfill({ json: {} }); }
+      return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }] } });
+    });
+    await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
+    await page.route('**/v0/management/plugins/model-combo/quota-status', route => {
+      quotaRequests++;
+      return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null }, credentials: [{ provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
+    await page.locator('#model-status[data-tone="ready"]').waitFor();
+    await page.getByText('75.0% remaining', { exact: false }).waitFor();
+    const card = page.locator('.route-card').first();
+    await card.locator('[data-field="strategy"]').selectOption('headroom');
+    await card.locator('[data-field="unknown_quota"]').selectOption('exclude');
+    await page.locator('[data-quota-field="refresh_seconds"]').fill('45');
+    const beforeSave = quotaRequests;
+    const savedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
+    await page.locator('#save').click();
+    await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
+    await savedQuotaResponse;
+    assert.equal(saved.routes[0].unknown_quota, 'exclude');
+    assert.equal(saved.quota_polling.refresh_seconds, 45);
+    assert.ok(quotaRequests > beforeSave);
+    await page.getByRole('tab', { name: 'Usage tracking' }).click();
+    const beforeOpen = quotaRequests;
+    const openedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
+    await page.locator('#configuration-tab').click();
+    await openedQuotaResponse;
+    assert.ok(quotaRequests > beforeOpen);
+    assert.equal(await card.locator('[data-field="unknown_quota"]').inputValue(), 'exclude');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
+    await page.locator('#model-status[data-tone="ready"]').waitFor();
+    assert.equal(await page.locator('.route-card [data-field="unknown_quota"]').inputValue(), 'exclude');
+    assert.equal(await page.locator('[data-quota-field="refresh_seconds"]').inputValue(), '45');
+  } finally { await browser.close(); }
+});
+
 test('request details render one expandable parent per trace with ordered executions', { timeout: 120_000 }, async () => {
   const { dashboardUrl, managementKey, executablePath } = dashboardEnvironment();
   const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });

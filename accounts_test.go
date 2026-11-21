@@ -36,7 +36,7 @@ func TestAccountCatalogJoinsSafeFieldsAndExcludesRouterAliases(t *testing.T) {
 			{ID: "route", Provider: pluginID, Models: []string{"smart"}},
 		},
 		files: []pluginapi.HostAuthFileEntry{
-			{ID: "a.json", Label: "Work", Disabled: true, Path: "/secret/a.json", Source: "file", Note: "sk-secret"},
+			{ID: "a.json", Label: "Work", Disabled: true, Path: "/secret/a.json", Source: "file", Note: "sk-secret", ProjectID: "project", Account: "account"},
 			{ID: "b.json", Email: "user@example.com"},
 		},
 	}
@@ -50,6 +50,9 @@ func TestAccountCatalogJoinsSafeFieldsAndExcludesRouterAliases(t *testing.T) {
 	a, b, registryOnly := catalog[0], catalog[1], catalog[2]
 	if a.Label != "Work" || !a.Disabled || a.AuthIndex != "i1" || a.Provider != "codex" || len(a.Models) != 1 || a.Models[0] != (accountModel{ID: "gpt-5", Entitlement: "unknown"}) {
 		t.Fatalf("a = %#v", a)
+	}
+	if a.ProjectID != "project" || a.Account != "account" {
+		t.Fatalf("metadata missing: %#v", a)
 	}
 	if b.Label != "user@example.com" || len(b.Models) != 1 || b.Models[0].ID != "claude-x" {
 		t.Fatalf("b = %#v", b)

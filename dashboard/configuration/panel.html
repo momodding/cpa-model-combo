@@ -86,6 +86,24 @@
         </div>
       </section>
 
+      <section class="fallback-settings" aria-labelledby="quota-polling-title">
+        <div class="section-head"><div class="section-title"><h2 id="quota-polling-title">Quota polling</h2></div></div>
+        <div class="field-grid">
+          <div class="field"><label for="quota-refresh">Refresh seconds</label><input id="quota-refresh" type="number" min="1" step="1" data-quota-field="refresh_seconds"></div>
+          <div class="field"><label for="quota-idle">Idle seconds</label><input id="quota-idle" type="number" min="1" step="1" data-quota-field="idle_seconds"></div>
+          <div class="field"><label for="quota-ttl">TTL seconds</label><input id="quota-ttl" type="number" min="1" step="1" data-quota-field="ttl_seconds"></div>
+          <div class="field"><label for="quota-stale">Max stale seconds</label><input id="quota-stale" type="number" min="1" step="1" data-quota-field="max_stale_seconds"></div>
+          <div class="field"><label for="quota-timeout">Fetch timeout seconds</label><input id="quota-timeout" type="number" min="1" step="1" data-quota-field="fetch_timeout_seconds"></div>
+          <div class="field"><label for="quota-concurrent">Max concurrent fetches</label><input id="quota-concurrent" type="number" min="1" step="1" data-quota-field="max_concurrent"></div>
+          <div class="field"><label for="quota-wait">Cold wait milliseconds</label><input id="quota-wait" type="number" min="1" step="1" data-quota-field="cold_wait_ms"></div>
+        </div>
+      </section>
+
+      <section class="fallback-settings" aria-labelledby="quota-status-title">
+        <div class="section-head"><div class="section-title"><h2 id="quota-status-title">Quota status</h2></div></div>
+        <div id="quota-status" aria-live="polite">Loading quota status…</div>
+      </section>
+
       <div id="configuration-actions" class="configuration-actions-dock" aria-hidden="true" hidden inert>
         <div id="configuration-actions-bar" class="footer-bar">
           <span class="footer-hint">Save checks duplicate aliases, recursion, target pools, and cooldowns with the plugin's Go parser.</span>
