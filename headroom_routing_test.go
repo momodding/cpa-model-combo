@@ -34,7 +34,7 @@ func TestRankHeadroomPolicies(t *testing.T) {
 	}
 	for _, policy := range []string{"priority", "last", "exclude"} {
 		route.UnknownQuota = policy
-		got, skips := rankHeadroom(route, accounts, snapshots, "smart")
+		got, skips := rankHeadroom(route, accounts, snapshots, "smart", 0.5)
 		want := 3
 		if policy == "exclude" {
 			want = 2
@@ -64,7 +64,7 @@ func TestRankHeadroomTiesAndUnknownPolicies(t *testing.T) {
 	for _, policy := range []string{"priority", "last", "exclude"} {
 		t.Run(policy, func(t *testing.T) {
 			route.UnknownQuota = policy
-			got, skips := rankHeadroom(route, accounts, snapshots, "smart")
+			got, skips := rankHeadroom(route, accounts, snapshots, "smart", 0.5)
 			want := []string{"model-a/b", "model-a/a", "model-b/c"}
 			if policy != "exclude" {
 				want = append(want, "model-a/d", "model-b/e")
@@ -262,5 +262,26 @@ func TestHeadroomUnavailableCredentialsHonorRetryTime(t *testing.T) {
 	}
 	if len(h.executeCalls) != 1 || h.executeCalls[0].AuthID != "c" {
 		t.Fatalf("calls=%+v; want only the credential whose retry time has elapsed", h.executeCalls)
+	}
+}
+
+func TestRankHeadroomScoresUnknownWithConfiguredPercent(t *testing.T) {
+	known := accountCredential{ID: "known", Provider: "p", AuthIndex: "known"}
+	unknown := accountCredential{ID: "unknown", Provider: "p", AuthIndex: "unknown"}
+	route := modelRoute{Targets: []modelTarget{{Model: "m"}}, UnknownQuota: "priority"}
+	accounts := map[string][]accountCredential{"m": {unknown, known}}
+	snapshots := map[string]quotaSnapshot{quotaKey(known): {State: quotaKnown, Windows: []quotaWindow{{Remaining: 0.4}}}}
+	for _, tc := range []struct {
+		score float64
+		first string
+	}{{0.35, "known"}, {0.5, "unknown"}} {
+		got, _ := rankHeadroom(route, accounts, snapshots, "m", tc.score)
+		if got[0].credential.ID != tc.first {
+			t.Fatalf("unknown score %v: first = %s", tc.score, got[0].credential.ID)
+		}
+	}
+	route.UnknownQuota = "last"
+	if got, _ := rankHeadroom(route, accounts, snapshots, "m", 1); got[0].credential.ID != "known" {
+		t.Fatalf("last policy must rank unknown after known, got %s first", got[0].credential.ID)
 	}
 }

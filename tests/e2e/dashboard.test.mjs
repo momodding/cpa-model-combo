@@ -76,8 +76,12 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('#workspace').waitFor({ state: 'visible' });
     await page.locator('#model-status[data-tone="ready"]').waitFor();
 
-    assert.equal(await page.locator('[role="tab"]').count(), 2);
+    assert.equal(await page.locator('[role="tab"]').count(), 3);
     assert.equal(await page.locator('#configuration-tab').getAttribute('aria-selected'), 'true');
+    await page.locator('#quota-tab').click();
+    assert.equal(await page.locator('#quota-panel').isVisible(), true);
+    assert.equal(await page.locator('#configuration-panel').isVisible(), false);
+    await page.locator('#configuration-tab').click();
     assert.deepEqual(await routeAliases(page), [], 'the disposable E2E instance should start without routes');
 
     for (let index = 0; index < 5; index++) {
@@ -423,11 +427,13 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
     if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
     await page.locator('#model-status[data-tone="ready"]').waitFor();
-    await page.getByText('75.0% remaining', { exact: false }).waitFor();
     const card = page.locator('.route-card').first();
     await card.locator('[data-field="strategy"]').selectOption('headroom');
     await card.locator('[data-field="unknown_quota"]').selectOption('exclude');
+    await page.getByRole('tab', { name: 'Quota tracking' }).click();
+    await page.getByText('75.0% remaining', { exact: false }).waitFor();
     await page.locator('[data-quota-field="refresh_seconds"]').fill('45');
+    await page.locator('[data-quota-field="default_unknown_quota_percent"]').fill('35');
     const beforeSave = quotaRequests;
     const savedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
     await page.locator('#save').click();
@@ -435,19 +441,23 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await savedQuotaResponse;
     assert.equal(saved.routes[0].unknown_quota, 'exclude');
     assert.equal(saved.quota_polling.refresh_seconds, 45);
+    assert.equal(saved.quota_polling.default_unknown_quota_percent, 35);
     assert.ok(quotaRequests > beforeSave);
     await page.getByRole('tab', { name: 'Usage tracking' }).click();
     const beforeOpen = quotaRequests;
     const openedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
-    await page.locator('#configuration-tab').click();
+    await page.locator('#quota-tab').click();
     await openedQuotaResponse;
     assert.ok(quotaRequests > beforeOpen);
+    await page.locator('#configuration-tab').click();
     assert.equal(await card.locator('[data-field="unknown_quota"]').inputValue(), 'exclude');
     await page.reload({ waitUntil: 'domcontentloaded' });
     if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
     await page.locator('#model-status[data-tone="ready"]').waitFor();
     assert.equal(await page.locator('.route-card [data-field="unknown_quota"]').inputValue(), 'exclude');
+    await page.getByRole('tab', { name: 'Quota tracking' }).click();
     assert.equal(await page.locator('[data-quota-field="refresh_seconds"]').inputValue(), '45');
+    assert.equal(await page.locator('[data-quota-field="default_unknown_quota_percent"]').inputValue(), '35');
   } finally { await browser.close(); }
 });
 

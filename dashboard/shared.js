@@ -58,6 +58,7 @@ const toastEl=document.getElementById('toast');
 const tabs=Array.from(document.querySelectorAll('[role="tab"]'));
 const configurationPanelEl=document.getElementById('configuration-panel');
 const usagePanelEl=document.getElementById('usage-panel');
+const quotaPanelEl=document.getElementById('quota-panel');
 const usageRangeEl=document.getElementById('usage-range');
 const usageGranularityEl=document.getElementById('usage-granularity');
 const usageRouterModelEl=document.getElementById('usage-router-model');

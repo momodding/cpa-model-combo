@@ -3,7 +3,7 @@ function configurationSnapshot(){
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
 		fallback:Object.fromEntries(Object.entries(state.fallback).map(([key,value])=>[key,key==='enabled'||key==='stream_fallback_before_payload'?Boolean(value):String(value).trim()])),
-    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,canonicalIntegerDraft(value)])),
+    quota_polling:Object.fromEntries(Object.entries(state.quota_polling||DEFAULT_QUOTA_POLLING).map(([key,value])=>[key,key==='default_unknown_quota_percent'?String(value).trim():canonicalIntegerDraft(value)])),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
       strategy:String(route.strategy===undefined||route.strategy===null?'':route.strategy),
@@ -29,7 +29,7 @@ function setConfigurationActionsAccessible(value){
   });
 }
 function updateConfigurationActionsClearance(){
-  const visible=!configurationActionsEl.hidden&&!configurationPanelEl.hidden&&!workspaceEl.hidden;
+  const visible=!configurationActionsEl.hidden&&(!configurationPanelEl.hidden||!quotaPanelEl.hidden)&&!workspaceEl.hidden;
   const height=visible?Math.ceil(configurationActionsEl.getBoundingClientRect().height):0;
   document.documentElement.style.setProperty('--configuration-actions-clearance',height+'px');
 }

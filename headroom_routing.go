@@ -25,7 +25,7 @@ type headroomCandidate struct {
 	state      quotaState
 }
 
-func rankHeadroom(route modelRoute, accounts map[string][]accountCredential, snapshots map[string]quotaSnapshot, requestedModel string) ([]headroomCandidate, []headroomSelection) {
+func rankHeadroom(route modelRoute, accounts map[string][]accountCredential, snapshots map[string]quotaSnapshot, requestedModel string, unknownScore float64) ([]headroomCandidate, []headroomSelection) {
 	var candidates []headroomCandidate
 	var skips []headroomSelection
 	for _, target := range route.Targets {
@@ -42,19 +42,22 @@ func rankHeadroom(route modelRoute, accounts map[string][]accountCredential, sna
 				skips = append(skips, headroomSelection{Model: target.Model, Credential: credential, Score: score, State: state.String(), Reason: reason})
 				continue
 			}
+			if state == quotaUnknown {
+				score = unknownScore
+			}
 			candidates = append(candidates, headroomCandidate{target: target.Model, credential: credential, score: score, state: state})
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
-		if (a.state == quotaUnknown) != (b.state == quotaUnknown) {
+		if route.UnknownQuota == "last" && (a.state == quotaUnknown) != (b.state == quotaUnknown) {
 			return a.state != quotaUnknown
-		}
-		if a.state == quotaUnknown {
-			return false
 		}
 		if a.score != b.score {
 			return a.score > b.score
+		}
+		if (a.state == quotaUnknown) != (b.state == quotaUnknown) {
+			return a.state != quotaUnknown
 		}
 		return a.state != quotaUnlimited && b.state == quotaUnlimited
 	})
@@ -74,7 +77,7 @@ func (p *modelRouterPlugin) headroomCandidates(ctx context.Context, request plug
 	if p.quota != nil {
 		snapshots = p.quota.Get(ctx, credentials)
 	}
-	candidates, skips := rankHeadroom(route, accounts, snapshots, request.Model)
+	candidates, skips := rankHeadroom(route, accounts, snapshots, request.Model, p.config.QuotaPolling.DefaultUnknownQuotaPercent/100)
 	p.runtime.mu.Lock()
 	if state := p.runtime.stateLocked(route); state != nil {
 		state.headroomSkips = skips

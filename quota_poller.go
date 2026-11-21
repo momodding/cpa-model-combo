@@ -119,7 +119,7 @@ collect:
 		entry := m.entries[key]
 		if entry == nil || !entry.hasSnapshot {
 			result[key] = quotaSnapshot{State: quotaUnknown, Err: "pending"}
-		} else if now.Sub(entry.snapshot.FetchedAt) > time.Duration(m.cfg.MaxStaleSeconds)*time.Second {
+		} else if now.Sub(entry.snapshot.FetchedAt) > time.Duration(m.cfg.TTLSeconds)*time.Second {
 			result[key] = quotaSnapshot{State: quotaUnknown, Err: "stale", Source: entry.snapshot.Source, FetchedAt: entry.snapshot.FetchedAt, BackoffUntil: entry.snapshot.BackoffUntil}
 		} else {
 			result[key] = entry.snapshot

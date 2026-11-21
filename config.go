@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -103,6 +104,8 @@ type quotaPollingConfig struct {
 	FetchTimeoutSeconds int `yaml:"fetch_timeout_seconds" json:"fetch_timeout_seconds"`
 	MaxConcurrent       int `yaml:"max_concurrent" json:"max_concurrent"`
 	ColdWaitMS          int `yaml:"cold_wait_ms" json:"cold_wait_ms"`
+	// Routing score for accounts without fresh quota; not a provider measurement.
+	DefaultUnknownQuotaPercent float64 `yaml:"default_unknown_quota_percent" json:"default_unknown_quota_percent"`
 }
 
 type routerConfig struct {
@@ -212,7 +215,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	}
 	wire := routerConfigYAML{QuotaPolling: quotaPollingConfig{
 		RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300,
-		FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500,
+		FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500, DefaultUnknownQuotaPercent: 50,
 	}}
 	if len(bytes.TrimSpace(raw)) > 0 {
 		decoder := yaml.NewDecoder(bytes.NewReader(raw))
@@ -234,6 +237,9 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	polling := wire.QuotaPolling
 	if polling.RefreshSeconds <= 0 || polling.IdleSeconds <= 0 || polling.TTLSeconds <= 0 || polling.MaxStaleSeconds <= 0 || polling.FetchTimeoutSeconds <= 0 || polling.MaxConcurrent <= 0 || polling.ColdWaitMS <= 0 {
 		return routerConfig{}, errors.New("quota_polling values must be positive")
+	}
+	if math.IsNaN(polling.DefaultUnknownQuotaPercent) || polling.DefaultUnknownQuotaPercent < 0 || polling.DefaultUnknownQuotaPercent > 100 {
+		return routerConfig{}, errors.New("quota_polling.default_unknown_quota_percent must be between 0 and 100")
 	}
 	if polling.TTLSeconds > polling.MaxStaleSeconds {
 		return routerConfig{}, errors.New("quota_polling.ttl_seconds must be <= max_stale_seconds")

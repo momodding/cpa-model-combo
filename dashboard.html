@@ -32,10 +32,13 @@
     <nav class="page-tabs" role="tablist" aria-label="Model Combo sections">
       <button id="configuration-tab" class="page-tab" type="button" role="tab" aria-selected="true" aria-controls="configuration-panel" tabindex="0">Configuration</button>
       <button id="usage-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="usage-panel" tabindex="-1">Usage tracking</button>
+      <button id="quota-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="quota-panel" tabindex="-1">Quota tracking</button>
     </nav>
 
 {{include "dashboard/configuration/panel.html"}}
 {{include "dashboard/usage/panel.html"}}
+{{include "dashboard/quota/panel.html"}}
+{{include "dashboard/configuration/actions.html"}}
   </main>
 </div>
 
