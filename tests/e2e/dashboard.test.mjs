@@ -416,7 +416,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
       return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }] } });
     });
     await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
-    await page.route('**/v0/management/plugins/model-combo/quota', route => {
+    await page.route('**/v0/management/plugins/model-combo/quota-status', route => {
       quotaRequests++;
       return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null }, credentials: [{ provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
     });
@@ -429,7 +429,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await card.locator('[data-field="unknown_quota"]').selectOption('exclude');
     await page.locator('[data-quota-field="refresh_seconds"]').fill('45');
     const beforeSave = quotaRequests;
-    const savedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota'));
+    const savedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
     await page.locator('#save').click();
     await page.waitForFunction(() => document.querySelector('#save-state').textContent === 'Saved in CPA');
     await savedQuotaResponse;
@@ -438,7 +438,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     assert.ok(quotaRequests > beforeSave);
     await page.getByRole('tab', { name: 'Usage tracking' }).click();
     const beforeOpen = quotaRequests;
-    const openedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota'));
+    const openedQuotaResponse = page.waitForResponse(response => response.url().includes('/model-combo/quota-status'));
     await page.locator('#configuration-tab').click();
     await openedQuotaResponse;
     assert.ok(quotaRequests > beforeOpen);

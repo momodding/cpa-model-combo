@@ -39,7 +39,7 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	}
 	wantedRoutes := map[string]bool{
 		http.MethodGet + " /plugins/model-combo/accounts":           false,
-		http.MethodGet + " /plugins/model-combo/quota":              false,
+		http.MethodGet + " /plugins/model-combo/quota-status":       false,
 		http.MethodPost + " /plugins/model-combo/validate":          false,
 		http.MethodGet + " /plugins/model-combo/usage/dashboard":    false,
 		http.MethodGet + " /plugins/model-combo/usage/overview":     false,
@@ -61,6 +61,11 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	for route, found := range wantedRoutes {
 		if !found {
 			t.Fatalf("management routes missing %s: %#v", route, management.Routes)
+		}
+	}
+	for _, route := range management.Routes {
+		if route.Method == http.MethodGet && route.Path == "/plugins/model-combo/quota" {
+			t.Fatalf("CPA-reserved quota path must not be advertised: %#v", route)
 		}
 	}
 }

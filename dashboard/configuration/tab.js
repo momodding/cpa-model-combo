@@ -146,7 +146,7 @@ async function loadQuotaStatus(){
   const panel=document.getElementById('quota-status');
   panel.textContent='Loading quota status…';
   try{
-    const data=await requestManagementJSON('/v0/management/plugins/model-combo/quota');
+    const data=await requestManagementJSON('/v0/management/plugins/model-combo/quota-status');
     panel.replaceChildren();
     const add=(tag,text)=>{const el=document.createElement(tag);el.textContent=text;panel.appendChild(el)};
     const polling=data.polling||{};

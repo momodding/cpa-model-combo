@@ -10,4 +10,6 @@ Headroom routes order eligible target and credential pairs by their lowest appli
 
 Quota comes from supported provider or plugin quota APIs through the local management API, never from usage callbacks or passive headers. Unavailable capabilities, missing management credentials and stale data are reported as unknown. The management key and provider tokens are never exposed in diagnostics. The dashboard provides route configuration, polling settings and read-only quota status.
 
+Quota diagnostics are served at `/v0/management/plugins/model-combo/quota-status`, separate from CPA’s reserved per-auth `/v0/management/plugins/:id/quota` route.
+
 Other routing strategies retain their existing behavior. Delivery requires verification and a pull request; pushing is prohibited in this session.

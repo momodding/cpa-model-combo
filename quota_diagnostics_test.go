@@ -27,7 +27,7 @@ func TestQuotaDiagnosticsManagement(t *testing.T) {
 	runtime.states[routeKey(route.Alias)].headroomSkips = []headroomSelection{{Model: "other", Credential: credential, State: "exhausted", Reason: "quota_exhausted"}}
 	p := &modelRouterPlugin{config: cfg, quota: m, runtime: runtime}
 	t.Setenv("MODEL_COMBO_MANAGEMENT_KEY", "secret-management-key")
-	response := handleModelRouterManagement(p, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterQuotaPath})
+	response := handleModelRouterManagement(p, pluginapi.ManagementRequest{Method: http.MethodGet, Path: modelRouterQuotaDiagnosticsPath})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", response.StatusCode)
 	}
@@ -50,7 +50,7 @@ func TestQuotaDiagnosticsManagement(t *testing.T) {
 	if len(got.Routes) != 1 || got.Routes[0].Selection == nil || got.Routes[0].Selection.Reason != "fallback" || len(got.Routes[0].Skips) != 1 || got.Routes[0].Skips[0].Reason != "quota_exhausted" {
 		t.Fatalf("routes = %+v", got.Routes)
 	}
-	response = handleModelRouterManagement(p, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterQuotaPath})
+	response = handleModelRouterManagement(p, pluginapi.ManagementRequest{Method: http.MethodPost, Path: modelRouterQuotaDiagnosticsPath})
 	if response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d", response.StatusCode)
 	}
