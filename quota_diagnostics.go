@@ -44,6 +44,8 @@ type quotaDiagnosticResponse struct {
 		Running    bool       `json:"running"`
 		ActiveKeys int        `json:"active_keys"`
 		LastTick   *time.Time `json:"last_tick"`
+		// missing, available, or rejected; never carries the key.
+		Authentication string `json:"authentication"`
 	} `json:"polling"`
 	Credentials []quotaDiagnosticCredential `json:"credentials"`
 	Routes      []quotaDiagnosticRoute      `json:"routes"`
@@ -71,6 +73,10 @@ func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
 		result.Polling.Running = m.running
 		result.Polling.ActiveKeys = len(m.entries)
 		result.Polling.LastTick = diagnosticTime(m.lastTick)
+		result.Polling.Authentication = "available"
+		if m.effectiveKeyLocked() == "" {
+			result.Polling.Authentication = "missing"
+		}
 		for _, entry := range m.entries {
 			snapshot := entry.snapshot
 			if !entry.hasSnapshot {
@@ -85,6 +91,9 @@ func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
 					age = 0
 				}
 				item.AgeSeconds = &age
+			}
+			if (snapshot.Err == "management_http_401" || snapshot.Err == "management_http_403") && result.Polling.Authentication == "available" {
+				result.Polling.Authentication = "rejected"
 			}
 			result.Credentials = append(result.Credentials, item)
 		}

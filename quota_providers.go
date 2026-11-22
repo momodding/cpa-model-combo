@@ -68,20 +68,9 @@ var quotaHTTPClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-func fetchQuota(ctx context.Context, credential accountCredential) quotaFetchResult {
+func fetchQuota(ctx context.Context, credential accountCredential, key string) quotaFetchResult {
 	provider := strings.ToLower(strings.TrimSpace(credential.Provider))
 	source := provider
-	key := os.Getenv("MODEL_COMBO_MANAGEMENT_KEY")
-	if strings.TrimSpace(key) == "" {
-		return quotaFailure(source, "management_key_missing", false)
-	}
-	base, err := managementURL(os.Getenv("MODEL_COMBO_MANAGEMENT_URL"))
-	if err != nil {
-		return quotaFailure(source, "management_url_invalid", false)
-	}
-	if credential.AuthIndex == "" {
-		return quotaFailure(source, "missing_auth_index", false)
-	}
 	var endpoints []string
 	method, data := "GET", ""
 	headers := map[string]string{"Authorization": "Bearer $TOKEN$", "Content-Type": "application/json"}
@@ -108,6 +97,16 @@ func fetchQuota(ctx context.Context, credential accountCredential) quotaFetchRes
 	default:
 		// The typed auth catalog does not expose plugin quota capabilities or IDs.
 		return quotaFailure(source, "unsupported_provider", false)
+	}
+	if strings.TrimSpace(key) == "" {
+		return quotaFailure(source, "management_key_missing", false)
+	}
+	base, err := managementURL(os.Getenv("MODEL_COMBO_MANAGEMENT_URL"))
+	if err != nil {
+		return quotaFailure(source, "management_url_invalid", false)
+	}
+	if credential.AuthIndex == "" {
+		return quotaFailure(source, "missing_auth_index", false)
 	}
 	base.Path = "/v0/management/api-call"
 	var result quotaFetchResult

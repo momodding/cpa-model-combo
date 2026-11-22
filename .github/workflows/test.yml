@@ -149,6 +149,11 @@ jobs:
             await page.getByRole('tab', { name: 'Usage tracking' }).click();
             await page.locator('#usage-panel').waitFor({ state: 'visible' });
             await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/usage.png`, fullPage: true });
+            await page.getByRole('tab', { name: 'Quota tracking' }).click();
+            await page.locator('#quota-status[aria-busy="false"]').waitFor();
+            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/quota.png`, fullPage: true });
+            await page.setViewportSize({ width: 390, height: 844 });
+            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/quota-mobile.png`, fullPage: true });
           } finally {
             await browser.close();
           }

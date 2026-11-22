@@ -81,6 +81,7 @@ func handleModelRouterManagement(plugin *modelRouterPlugin, request pluginapi.Ma
 
 func handleModelRouterManagementWithHost(plugin *modelRouterPlugin, request pluginapi.ManagementRequest, host modelHost) pluginapi.ManagementResponse {
 	path := strings.TrimRight(strings.TrimSpace(request.Path), "/")
+	captureManagementKey(plugin, path, request)
 	if strings.HasPrefix(path, modelRouterUsageBasePath+"/") {
 		return handleUsageManagement(plugin, path, request)
 	}
@@ -296,4 +297,30 @@ func allowedAccountsTypeError(body []byte) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// captureManagementKey hands the key CPA already authenticated for this registered
+// management route to quota polling; resources and unregistered routes never qualify.
+func captureManagementKey(plugin *modelRouterPlugin, path string, request pluginapi.ManagementRequest) {
+	if plugin == nil || plugin.quota == nil {
+		return
+	}
+	registered := false
+	for _, route := range modelRouterManagementRegistration().Routes {
+		if strings.EqualFold(route.Method, request.Method) && "/v0/management"+route.Path == path {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		return
+	}
+	key := strings.TrimSpace(request.Headers.Get("Authorization"))
+	if parts := strings.SplitN(key, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		key = strings.TrimSpace(parts[1])
+	}
+	if key == "" {
+		key = strings.TrimSpace(request.Headers.Get("X-Management-Key"))
+	}
+	plugin.quota.SetManagementKey(key)
 }

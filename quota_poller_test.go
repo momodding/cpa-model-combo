@@ -17,7 +17,7 @@ func TestQuotaPollerDedupesAndSurvivesCancellation(t *testing.T) {
 	defer m.Reconcile(routerConfig{})
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
-	m.fetch = func(ctx context.Context, _ accountCredential) quotaFetchResult {
+	m.fetch = func(ctx context.Context, _ accountCredential, _ string) quotaFetchResult {
 		if calls.Add(1) == 1 {
 			close(started)
 		}
@@ -61,7 +61,7 @@ func TestQuotaPollerTTLBackoffStaleAndReconcile(t *testing.T) {
 	m.now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
 	advance := func(d time.Duration) { clockMu.Lock(); now = now.Add(d); clockMu.Unlock() }
 	var calls atomic.Int32
-	m.fetch = func(context.Context, accountCredential) quotaFetchResult {
+	m.fetch = func(context.Context, accountCredential, string) quotaFetchResult {
 		if calls.Add(1) == 1 {
 			return quotaFetchResult{Snapshot: quotaSnapshot{State: quotaKnown, FetchedAt: m.now()}}
 		}
@@ -119,7 +119,7 @@ func TestQuotaPollerIdleStop(t *testing.T) {
 	cfg.QuotaPolling.IdleSeconds = 1
 	m := newQuotaPollingManager(cfg)
 	defer m.Reconcile(routerConfig{})
-	m.fetch = func(context.Context, accountCredential) quotaFetchResult {
+	m.fetch = func(context.Context, accountCredential, string) quotaFetchResult {
 		return quotaFetchResult{Snapshot: quotaSnapshot{State: quotaKnown, FetchedAt: time.Now()}}
 	}
 	m.Get(context.Background(), []accountCredential{{Provider: "claude", AuthIndex: "idle"}})
@@ -144,7 +144,7 @@ func TestQuotaPollerDiscardsInflightAfterDisable(t *testing.T) {
 	cfg.QuotaPolling.ColdWaitMS = 10
 	m := newQuotaPollingManager(cfg)
 	started, release := make(chan struct{}), make(chan struct{})
-	m.fetch = func(context.Context, accountCredential) quotaFetchResult {
+	m.fetch = func(context.Context, accountCredential, string) quotaFetchResult {
 		close(started)
 		<-release
 		return quotaFetchResult{Snapshot: quotaSnapshot{State: quotaKnown, FetchedAt: time.Now()}}

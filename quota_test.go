@@ -82,12 +82,12 @@ func TestQuotaManagementSecurityAndAcquisition(t *testing.T) {
 	defer server.Close()
 	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
 	t.Setenv("MODEL_COMBO_MANAGEMENT_KEY", "secret")
-	result := fetchQuota(context.Background(), accountCredential{Provider: "claude", AuthIndex: "idx"})
+	result := fetchQuota(context.Background(), accountCredential{Provider: "claude", AuthIndex: "idx"}, "secret")
 	if !seen || result.Snapshot.State != quotaKnown || strings.Contains(result.Snapshot.Err, "secret") {
 		t.Fatalf("result: %+v", result)
 	}
 	t.Setenv("MODEL_COMBO_MANAGEMENT_KEY", "")
-	if result := fetchQuota(context.Background(), accountCredential{Provider: "claude"}); result.Snapshot.Err != "management_key_missing" {
+	if result := fetchQuota(context.Background(), accountCredential{Provider: "claude", AuthIndex: "idx"}, ""); result.Snapshot.Err != "management_key_missing" {
 		t.Fatalf("missing key: %+v", result)
 	}
 }
@@ -123,7 +123,7 @@ func TestQuotaProviderMetadata(t *testing.T) {
 	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
 	t.Setenv("MODEL_COMBO_MANAGEMENT_KEY", "secret")
 	for _, credential := range []accountCredential{{Provider: "codex", AuthIndex: "i", Account: "account-id"}, {Provider: "antigravity", AuthIndex: "i", ProjectID: "project-id"}} {
-		if got := fetchQuota(context.Background(), credential); got.Snapshot.State != quotaKnown {
+		if got := fetchQuota(context.Background(), credential, "secret"); got.Snapshot.State != quotaKnown {
 			t.Fatalf("%s: %+v", credential.Provider, got)
 		}
 	}

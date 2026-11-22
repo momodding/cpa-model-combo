@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +28,11 @@ type QuotaPollingManager struct {
 	lastTick time.Time
 	wake     chan struct{}
 	ctx      context.Context
-	fetch    func(context.Context, accountCredential) quotaFetchResult
-	now      func() time.Time
+	fetch    func(context.Context, accountCredential, string) quotaFetchResult
+	// Host-authenticated management key, memory only; never serialized or persisted.
+	managementKey string
+	authGen       uint64
+	now           func() time.Time
 }
 
 func quotaKey(credential accountCredential) string {
@@ -143,18 +147,22 @@ func (m *QuotaPollingManager) pumpLocked() {
 		m.active++
 		credential, done := entry.credential, entry.pending
 		timeout := time.Duration(m.cfg.FetchTimeoutSeconds) * time.Second
-		go m.fetchOne(key, entry, credential, done, timeout)
+		go m.fetchOne(key, entry, credential, done, timeout, m.effectiveKeyLocked(), m.authGen)
 	}
 }
 
-func (m *QuotaPollingManager) fetchOne(key string, entry *quotaPollEntry, credential accountCredential, done chan struct{}, timeout time.Duration) {
+func (m *QuotaPollingManager) fetchOne(key string, entry *quotaPollEntry, credential accountCredential, done chan struct{}, timeout time.Duration, secret string, gen uint64) {
 	ctx, cancel := context.WithTimeout(m.ctx, timeout)
-	result := m.fetch(ctx, credential)
+	result := m.fetch(ctx, credential, secret)
 	cancel()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.active--
-	if m.entries[key] == entry {
+	if m.entries[key] == entry && gen != m.authGen {
+		// A newer key arrived mid-flight: drop this result and refetch with it.
+		entry.pending, entry.started = make(chan struct{}), false
+		m.pumpLocked()
+	} else if m.entries[key] == entry {
 		now := m.now()
 		if result.Retryable {
 			entry.failures++
@@ -229,4 +237,35 @@ func (m *QuotaPollingManager) loop() {
 			}
 		}
 	}
+}
+
+func (m *QuotaPollingManager) effectiveKeyLocked() string {
+	if m.managementKey != "" {
+		return m.managementKey
+	}
+	return strings.TrimSpace(os.Getenv("MODEL_COMBO_MANAGEMENT_KEY"))
+}
+
+func quotaAuthBlocked(err string) bool {
+	return err == "management_key_missing" || err == "management_http_401" || err == "management_http_403"
+}
+
+// SetManagementKey remembers the key CPA just authenticated; blocked entries refetch at once.
+func (m *QuotaPollingManager) SetManagementKey(key string) {
+	key = strings.TrimSpace(key)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if key == "" || key == m.managementKey {
+		return
+	}
+	m.managementKey = key
+	m.authGen++
+	for _, entry := range m.entries {
+		if entry.pending == nil && entry.hasSnapshot && quotaAuthBlocked(entry.snapshot.Err) {
+			entry.snapshot.BackoffUntil = time.Time{}
+			entry.failures = 0
+			entry.pending = make(chan struct{})
+		}
+	}
+	m.pumpLocked()
 }

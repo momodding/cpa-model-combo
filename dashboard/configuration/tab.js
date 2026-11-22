@@ -142,41 +142,6 @@ function updateModelStatus(){
     modelStatusEl.removeAttribute('title');
   }
 }
-async function loadQuotaStatus(){
-  const panel=document.getElementById('quota-status');
-  panel.textContent='Loading quota status…';
-  try{
-    const data=await requestManagementJSON('/v0/management/plugins/model-combo/quota-status');
-    panel.replaceChildren();
-    const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;if(cls)node.className=cls;return node};
-    const polling=data.polling||{};
-    panel.appendChild(el('p','Polling '+(polling.running?'running':'stopped')+' · '+(polling.active_keys??0)+' active credentials · last tick '+(polling.last_tick||'never'),'quota-summary'));
-    const credentials=Array.isArray(data.credentials)?data.credentials:[];
-    if(!credentials.length)panel.appendChild(el('p','No active quota credentials.','quota-empty'));
-    else{
-      const table=el('table','','quota-table'),head=table.createTHead().insertRow();
-      ['Account','Provider','State','Remaining','Fetched','Notes'].forEach(name=>head.appendChild(el('th',name)).scope='col');
-      const body=table.createTBody();
-      credentials.forEach(credential=>{
-        const row=body.insertRow();
-        row.insertCell().textContent=credential.label||credential.auth_index||'—';
-        row.insertCell().textContent=credential.provider||'—';
-        const state=row.insertCell();state.appendChild(el('span',credential.state||'unknown','status-pill '+(credential.state==='known'?'success':credential.error?'failure':'')));
-        const remaining=row.insertCell();
-        (credential.windows||[]).forEach(window=>remaining.appendChild(el('div',(window.name+(window.scope?' ('+window.scope+')':''))+' '+(Number.isFinite(window.remaining)?(window.remaining*100).toFixed(1)+'% remaining':'—')+(window.reset_at?' · resets '+window.reset_at:''))));
-        if(!remaining.childNodes.length)remaining.textContent=credential.state==='unlimited'?'Unlimited':'—';
-        row.insertCell().textContent=(credential.fetched_at||'never')+(credential.age_seconds==null?'':' ('+credential.age_seconds+'s ago)')+' · '+(credential.source||'—');
-        row.insertCell().textContent=[credential.error?'Error: '+credential.error:'',credential.backoff_until?'Backoff until '+credential.backoff_until:''].filter(Boolean).join(' · ')||'—';
-      });
-      const wrap=el('div','','quota-table-wrap');wrap.appendChild(table);panel.appendChild(wrap);
-    }
-    (data.routes||[]).forEach(route=>{
-      const describe=selection=>[selection.model,selection.credential?.label||selection.credential?.auth_index,selection.state,selection.score==null?'':'score '+selection.score,selection.reason].filter(Boolean).join(' · ');
-      panel.appendChild(el('p','Route '+route.alias+': '+(route.selection?describe(route.selection):'No selection'),'quota-route'));
-      (route.skips||[]).forEach(skip=>panel.appendChild(el('p','Skipped: '+describe(skip),'quota-skip')));
-    });
-  }catch(error){panel.textContent='Quota status unavailable: '+error.message}
-}
 async function loadConfiguration(){
   setBusy(true);
   setAuthNote('Loading configuration…');
