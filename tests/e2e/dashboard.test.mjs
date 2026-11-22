@@ -439,6 +439,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await page.locator('#quota-provider').selectOption('codex');
     assert.equal(await page.locator('.quota-card').count(), 1);
     await page.locator('#quota-provider').selectOption('');
+    await page.locator('.quota-settings summary').click();
     await page.locator('[data-quota-field="refresh_seconds"]').fill('45');
     await page.locator('[data-quota-field="default_unknown_quota_percent"]').fill('35');
     const beforeSave = quotaRequests;
