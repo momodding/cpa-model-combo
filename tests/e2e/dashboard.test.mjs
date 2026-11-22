@@ -162,6 +162,7 @@ test('dashboard tabs retain their browser interactions after source assembly', {
     await page.locator('#group-dimension').selectOption('provider');
     await page.locator('#group-page-size').selectOption('25');
     await page.locator('#request-page-size').selectOption('25');
+    await page.locator('#usage-more-filters summary').click();
     await page.locator('#usage-result').selectOption('success');
     await page.locator('#usage-refresh').click();
     await waitForUsageReady(page);
