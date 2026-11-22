@@ -149,11 +149,35 @@ jobs:
             await page.getByRole('tab', { name: 'Usage tracking' }).click();
             await page.locator('#usage-panel').waitFor({ state: 'visible' });
             await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/usage.png`, fullPage: true });
+            const long = 'Very-long-account-label-'.repeat(8) + '@example.com';
+            const win = [{ name: 'primary', scope: '', remaining: 0.62, reset_at: null }, { name: 'weekly', scope: 'all models', remaining: 0.08, reset_at: null }];
+            const fixtures = {
+              healthy: { polling: { running: true, active_keys: 3, last_tick: null, authentication: 'available' }, credentials: [{ provider: 'codex', auth_index: 'i1', label: 'Account A', state: 'known', source: 'codex', windows: win }, { provider: 'claude', auth_index: 'i2', label: 'Account B', state: 'known', source: 'claude', windows: win.slice(0, 1) }, { provider: 'devin', auth_index: 'i3', label: 'Account C', state: 'unknown', source: 'devin', error: 'unsupported_provider', windows: [] }], routes: [] },
+              blocked: { polling: { running: true, active_keys: 2, last_tick: null, authentication: 'missing' }, credentials: [{ provider: 'codex', auth_index: 'i1', label: 'Account A', state: 'unknown', source: 'codex', error: 'management_key_missing', windows: [] }], routes: [] },
+              long: { polling: { running: true, active_keys: 1, last_tick: null, authentication: 'rejected' }, credentials: [{ provider: 'antigravity', auth_index: long, label: long, state: 'known', source: 'antigravity', windows: win }], routes: [] },
+            };
+            let fixture = 'healthy';
+            await page.route('**/v0/management/plugins/model-combo/quota-status', route => route.fulfill({ json: fixtures[fixture] }));
+            const dir = process.env.DASHBOARD_E2E_SCREENSHOTS;
             await page.getByRole('tab', { name: 'Quota tracking' }).click();
             await page.locator('#quota-status[aria-busy="false"]').waitFor();
-            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/quota.png`, fullPage: true });
-            await page.setViewportSize({ width: 390, height: 844 });
-            await page.screenshot({ path: `${process.env.DASHBOARD_E2E_SCREENSHOTS}/quota-mobile.png`, fullPage: true });
+            for (const scheme of ['light', 'dark']) for (const [size, width, height] of [['desktop', 1440, 900], ['mobile', 320, 720]]) {
+              await page.emulateMedia({ colorScheme: scheme });
+              await page.setViewportSize({ width, height });
+              for (const name of Object.keys(fixtures)) {
+                fixture = name;
+                await page.locator('#quota-refresh').click();
+                await page.locator('#quota-status[aria-busy="false"]').waitFor();
+                await page.screenshot({ path: `${dir}/quota-${name}-${scheme}-${size}.png`, fullPage: true });
+                const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+                if (overflow) throw new Error(`horizontal overflow: ${name} ${scheme} ${size}`);
+              }
+              fixture = 'healthy';
+              await page.locator('#quota-refresh').click();
+              await page.locator('.quota-settings summary').click();
+              await page.screenshot({ path: `${dir}/quota-settings-${scheme}-${size}.png`, fullPage: true });
+              await page.locator('.quota-settings summary').click();
+            }
           } finally {
             await browser.close();
           }
