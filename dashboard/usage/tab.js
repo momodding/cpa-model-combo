@@ -19,7 +19,8 @@ function activateTab(name,moveFocus=false){
   usageState.active=usage;
   if(usage)startUsageDashboard();
   else{clearChartActive(false);stopUsagePolling()}
-  if(quota&&!workspaceEl.hidden)loadQuotaStatus();
+  if(quota&&!workspaceEl.hidden){quotaState.active=true;loadQuotaStatus()}
+  else stopQuotaPolling();
 }
 function handleTabKey(event){
   const current=tabs.indexOf(event.currentTarget);

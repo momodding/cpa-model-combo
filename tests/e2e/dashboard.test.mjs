@@ -422,7 +422,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
     await page.route('**/v0/management/plugins/model-combo/quota-status', route => {
       quotaRequests++;
-      return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null }, credentials: [{ provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
+      return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null, authentication: 'missing' }, credentials: [{ provider: 'devin', auth_index: 'index-d', label: 'Account A', state: 'unknown', source: 'devin', error: 'unsupported_provider', windows: [] }, { provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
     });
     await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
     if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
@@ -432,6 +432,14 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await card.locator('[data-field="unknown_quota"]').selectOption('exclude');
     await page.getByRole('tab', { name: 'Quota tracking' }).click();
     await page.getByText('75.0% remaining', { exact: false }).waitFor();
+    assert.equal(await page.locator('.quota-card').count(), 2);
+    assert.equal(await page.locator('.quota-card progress').count(), 1);
+    await page.getByText('Quota polling is not supported for this provider.').waitFor();
+    await page.locator('#quota-banner').waitFor({ state: 'visible' });
+    await page.locator('#quota-provider').selectOption('codex');
+    assert.equal(await page.locator('.quota-card').count(), 1);
+    await page.locator('#quota-provider').selectOption('');
+    await page.locator('.quota-settings summary').click();
     await page.locator('[data-quota-field="refresh_seconds"]').fill('45');
     await page.locator('[data-quota-field="default_unknown_quota_percent"]').fill('35');
     const beforeSave = quotaRequests;

@@ -142,28 +142,6 @@ function updateModelStatus(){
     modelStatusEl.removeAttribute('title');
   }
 }
-async function loadQuotaStatus(){
-  const panel=document.getElementById('quota-status');
-  panel.textContent='Loading quota status…';
-  try{
-    const data=await requestManagementJSON('/v0/management/plugins/model-combo/quota-status');
-    panel.replaceChildren();
-    const add=(tag,text)=>{const el=document.createElement(tag);el.textContent=text;panel.appendChild(el)};
-    const polling=data.polling||{};
-    add('p','Polling: '+(polling.running?'running':'stopped')+' · Active credentials: '+(polling.active_keys??0)+' · Last tick: '+(polling.last_tick||'never'));
-    const credentials=Array.isArray(data.credentials)?data.credentials:[];
-    if(!credentials.length)add('p','No active quota credentials.');
-    credentials.forEach(credential=>{
-      add('p',[credential.label,credential.auth_index,credential.provider,credential.state,'Source: '+(credential.source||'—'),'Fetched: '+(credential.fetched_at||'never'),'Age: '+(credential.age_seconds==null?'—':credential.age_seconds+'s'),credential.error?'Error: '+credential.error:'',credential.backoff_until?'Backoff until: '+credential.backoff_until:''].filter(Boolean).join(' · '));
-      (credential.windows||[]).forEach(window=>add('p','  '+window.name+(window.scope?' ('+window.scope+')':'')+': '+(window.remaining*100).toFixed(1)+'% remaining'+(window.reset_at?' · Resets: '+window.reset_at:'')));
-    });
-    (data.routes||[]).forEach(route=>{
-      const describe=selection=>[selection.model,selection.credential?.label||selection.credential?.auth_index,selection.state,selection.score==null?'':String(selection.score),selection.reason].filter(Boolean).join(' · ');
-      add('p','Route '+route.alias+': '+(route.selection?describe(route.selection):'No selection'));
-      (route.skips||[]).forEach(skip=>add('p','Skipped: '+describe(skip)));
-    });
-  }catch(error){panel.textContent='Quota status unavailable: '+error.message}
-}
 async function loadConfiguration(){
   setBusy(true);
   setAuthNote('Loading configuration…');

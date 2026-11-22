@@ -8,13 +8,13 @@
 {{include "dashboard/shared.css"}}
 {{include "dashboard/configuration/styles.css"}}
 {{include "dashboard/usage/styles.css"}}
+{{include "dashboard/quota/styles.css"}}
 </style>
 </head>
 <body>
 <div class="shell">
   <header id="masthead" class="masthead">
     <div>
-      <p class="eyebrow">CPA execution map</p>
       <h1>Model Combo</h1>
       <p class="lede">Map stable client aliases to ordered CPA model targets. Choose priority, round-robin, random, or last_known_good selection and control how long failed targets cool down.</p>
     </div>
@@ -53,6 +53,7 @@
 {{include "dashboard/usage/tables.js"}}
 {{include "dashboard/usage/charts.js"}}
 {{include "dashboard/usage/pricing.js"}}
+{{include "dashboard/quota/tab.js"}}
 {{include "dashboard/app.js"}}
 </script>
 </body>
