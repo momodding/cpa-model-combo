@@ -136,7 +136,7 @@ jobs:
           # Best effort: the final state of the disposable instance, captured while it is still running.
           export DASHBOARD_E2E_SCREENSHOTS="$RUNNER_TEMP/dashboard-e2e-screenshots"
           mkdir -p "$DASHBOARD_E2E_SCREENSHOTS"
-          node --input-type=module <<'JS' || echo '::warning::dashboard screenshots were not captured'
+          node --input-type=module <<'JS' || { echo '::error::dashboard screenshots or quota overflow check failed'; status=1; }
           import { chromium } from 'playwright-core';
           const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
           try {
