@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,7 +19,7 @@ func TestFetchQuotaProviderChecksPrecedeKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 	defer server.Close()
 	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
-	for _, provider := range []string{"agy", "devin"} {
+	for _, provider := range []string{"nosuch"} {
 		for _, key := range []string{"", "k"} {
 			if got := fetchQuota(context.Background(), accountCredential{Provider: provider, AuthIndex: "i"}, key); got.Snapshot.Err != "unsupported_provider" {
 				t.Fatalf("%s/%q: %+v", provider, key, got.Snapshot)
@@ -115,5 +116,76 @@ func TestManagementKeyPrecedenceAndRejection(t *testing.T) {
 	m.mu.Lock()
 	if got.Polling.Authentication != "rejected" {
 		t.Fatalf("auth = %q", got.Polling.Authentication)
+	}
+}
+
+func TestDevinQuotaRequestAndParse(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"status_code":200,"body":{"userStatus":{"planStatus":{"dailyQuotaRemainingPercent":75,"weeklyQuotaRemainingPercent":"0","dailyQuotaResetAtUnix":"1900000000","weeklyQuotaResetAtUnix":-1}}}}`))
+	}))
+	defer server.Close()
+	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
+	got := fetchQuota(context.Background(), accountCredential{Provider: "devin", AuthIndex: "d1"}, "k").Snapshot
+	if gotBody["auth_index"] != "d1" || gotBody["url"] != devinQuotaURL || !strings.Contains(gotBody["data"].(string), `"$TOKEN$"`) {
+		t.Fatalf("%v", gotBody)
+	}
+	if got.State != quotaKnown || len(got.Windows) != 2 || got.Windows[0].Remaining != .75 || got.Windows[1].Remaining != 0 || got.Windows[1].ResetAt.IsZero() == false || got.Windows[0].ResetAt.IsZero() {
+		t.Fatalf("%+v", got)
+	}
+	for body, want := range map[string]quotaState{`{"userStatus":{"planStatus":{"dailyQuotaRemainingPercent":101,"weeklyQuotaRemainingPercent":null,"dailyQuotaResetAtUnix":5}}}`: quotaUnknown, `{"userStatus":{"planStatus":{"dailyQuotaRemainingPercent":5}}}`: quotaPartial, `{`: quotaUnknown} {
+		if s := parseDevinQuota([]byte(body)); s.State != want {
+			t.Fatalf("%s: %+v", body, s)
+		}
+	}
+}
+
+func TestAgyQuotaDelegatesPerAccount(t *testing.T) {
+	status := 200
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		json.NewDecoder(r.Body).Decode(&req)
+		if r.URL.Path != "/v0/management/quota/fetch" || len(req) != 1 {
+			t.Errorf("%s %v", r.URL.Path, req)
+		}
+		w.WriteHeader(status)
+		w.Write([]byte(`{"groups":[{"display_name":"Pro","buckets":[{"window":"5h","remaining_fraction":0,"reset_time":"` + map[string]string{"a": "2030-01-01T00:00:00Z", "b": "bad"}[req["auth_index"]] + `"},{"window":"7d"}]}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
+	a := fetchQuota(context.Background(), accountCredential{Provider: "agy", AuthIndex: "a"}, "k").Snapshot
+	b := fetchQuota(context.Background(), accountCredential{Provider: "agy", AuthIndex: "b"}, "k").Snapshot
+	if a.State != quotaPartial || len(a.Windows) != 1 || a.Windows[0].Name != "Pro 5h" || a.Windows[0].Remaining != 0 || a.Windows[0].ResetAt.IsZero() || !b.Windows[0].ResetAt.IsZero() {
+		t.Fatalf("%+v %+v", a, b)
+	}
+	for code, want := range map[int]string{501: "quota_provider_unavailable", 404: "quota_endpoint_or_account_unavailable", 429: "management_http_429"} {
+		status = code
+		if got := fetchQuota(context.Background(), accountCredential{Provider: "agy", AuthIndex: "a"}, "k"); got.Snapshot.Err != want || got.Retryable != (code == 429) {
+			t.Fatalf("%d: %+v", code, got)
+		}
+	}
+}
+
+func TestDevinInnerStatusAndHeaders(t *testing.T) {
+	status := 401
+	var headers map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		headers, _ = req["header"].(map[string]any)
+		w.Write([]byte(`{"status_code":` + strconv.Itoa(status) + `,"body":"secret-body"}`))
+	}))
+	defer server.Close()
+	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", server.URL)
+	for code, want := range map[int]string{401: "provider_auth_rejected", 403: "provider_access_denied", 429: "provider_rate_limited", 503: "provider_unavailable", 400: "provider_request_failed"} {
+		status = code
+		got := fetchQuota(context.Background(), accountCredential{Provider: "devin", AuthIndex: "d"}, "k")
+		if got.Snapshot.Err != want || got.Retryable != (code == 429 || code >= 500) {
+			t.Fatalf("%d: %+v", code, got)
+		}
+	}
+	if _, ok := headers["Authorization"]; ok || headers["Connect-Protocol-Version"] != "1" {
+		t.Fatalf("%v", headers)
 	}
 }
