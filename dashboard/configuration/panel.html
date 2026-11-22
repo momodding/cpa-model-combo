@@ -15,13 +15,6 @@
         <span id="save-state" class="save-state" data-dirty="false">Loaded from CPA</span>
       </section>
 
-      <section class="flow-rail" aria-label="Model routing flow">
-        <span class="flow-node">Client alias</span><span class="flow-line"></span>
-        <span class="flow-node action">Select target</span><span class="flow-line"></span>
-        <span class="flow-node gate">Cooldown gate</span><span class="flow-line"></span>
-        <span class="flow-node">CPA executor</span>
-      </section>
-
       <div class="section-head">
         <div class="section-title">
           <h2>Route table</h2>
@@ -32,6 +25,18 @@
       </div>
       <section id="routes" class="routes" aria-live="polite"></section>
 
+      <details class="routing-disclosure">
+        <summary>How routing works</summary>
+      <section class="flow-rail" aria-label="Model routing flow">
+        <span class="flow-node">Client alias</span><span class="flow-line"></span>
+        <span class="flow-node action">Select target</span><span class="flow-line"></span>
+        <span class="flow-node gate">Cooldown gate</span><span class="flow-line"></span>
+        <span class="flow-node">CPA executor</span>
+      </section>
+      </details>
+
+      <details id="fallback-details" class="fallback-disclosure" open>
+        <summary>Fallback settings</summary>
       <section id="fallback-settings" class="fallback-settings" aria-labelledby="fallback-settings-title">
         <div class="section-head">
           <div class="section-title">
@@ -45,7 +50,7 @@
             <span>Fallback enabled</span>
           </label>
         </div>
-        <div class="field-grid">
+        <div class="field-grid field-pair">
           <div class="field">
             <label for="fallback-on-status">Fallback on status</label>
             <input id="fallback-on-status" type="text" data-fallback-field="fallback_on_status" inputmode="numeric" placeholder="401, 402, 403, 404, 408, 429, 500, 502, 503, 504">
@@ -56,6 +61,8 @@
             <input id="fallback-no-on-status" type="text" data-fallback-field="no_fallback_on_status" inputmode="numeric">
             <small>Comma-separated. A status cannot appear in both lists.</small>
           </div>
+        </div>
+        <div class="field-grid field-pair">
           <div class="field">
             <label for="fallback-retry-codes">Retry error codes</label>
             <input id="fallback-retry-codes" type="text" data-fallback-field="retry_codes">
@@ -85,4 +92,5 @@
           </div>
         </div>
       </section>
+      </details>
     </section>

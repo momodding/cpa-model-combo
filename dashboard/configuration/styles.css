@@ -211,3 +211,10 @@ input[type="text"], input[type="number"], input[type="password"], select {
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast[data-tone="error"] { background: var(--danger); }
 .toast[data-tone="success"] { background: var(--teal); }
+
+.routing-disclosure, .fallback-disclosure { margin-top: 14px; }
+.routing-disclosure > summary, .fallback-disclosure > summary { cursor: pointer; padding: 6px 2px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+.routing-disclosure > summary:focus-visible, .fallback-disclosure > summary:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 24%, transparent); }
+.field-pair { margin-bottom: 13px; }
+.field-pair > .field { grid-column: span 6; }
+@media (max-width: 720px) { .field-pair > .field { grid-column: 1 / -1; } }

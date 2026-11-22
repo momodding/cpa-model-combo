@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1233,5 +1234,79 @@ func sharedLibraryExtension() string {
 		return ".dll"
 	default:
 		return ".so"
+	}
+}
+
+// Proves a registered agy QuotaProvider plugin (tests/fixtures/agyquota/plugin.c) receives per-credential /quota/fetch dispatch from the real host.
+func TestAgyQuotaHostDispatchSelectsAccount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the native host smoke test is currently exercised on Unix hosts")
+	}
+	cpaSource := os.Getenv("CPA_SOURCE")
+	if cpaSource == "" {
+		cpaSource = filepath.Join("..", "CLIProxyAPI")
+	}
+	cpaSource, err := filepath.Abs(cpaSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	authDir := filepath.Join(workDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		auth, _ := json.Marshal(map[string]any{"type": "agy", "email": name + "@example.invalid", "token": "token-" + name})
+		if err := os.WriteFile(filepath.Join(authDir, name+".json"), auth, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pluginsDir := filepath.Join(workDir, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSmokeCommand(t, ".", "cc", "-shared", "-fPIC", "-o", filepath.Join(pluginsDir, "agy-quota-v0.0.0-test"+sharedLibraryExtension()), "tests/fixtures/agyquota/plugin.c")
+	cpaBinary := filepath.Join(workDir, "cli-proxy-api")
+	runSmokeCommand(t, cpaSource, "go", "build", "-o", cpaBinary, "./cmd/server")
+	port := reserveLocalPort(t)
+	configPath := filepath.Join(workDir, "config.yaml")
+	config := fmt.Sprintf("host: \"127.0.0.1\"\nport: %d\nauth-dir: %q\napi-keys: [\"local-test-key\"]\nremote-management:\n  allow-remote: false\n  secret-key: \"local-management-key\"\n  disable-control-panel: true\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n    agy-quota:\n      enabled: true\n", port, authDir, pluginsDir)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	startSmokeCPA(t, cpaBinary, configPath, baseURL)
+
+	var files struct {
+		Files []struct {
+			AuthIndex string `json:"auth_index"`
+			Email     string `json:"email"`
+		} `json:"files"`
+	}
+	if err := requestSmokeManagementJSON(baseURL, "/v0/management/auth-files", &files); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MODEL_COMBO_MANAGEMENT_URL", baseURL)
+	want := map[string]float64{"a@example.invalid": 0.25, "b@example.invalid": 0.8}
+	seen := 0
+	for _, file := range files.Files {
+		expected, ok := want[file.Email]
+		if !ok {
+			continue
+		}
+		if file.AuthIndex == "" {
+			t.Fatalf("%s listed without auth_index", file.Email)
+		}
+		seen++
+		snapshot := fetchQuota(context.Background(), accountCredential{Provider: "agy", AuthIndex: file.AuthIndex}, "local-management-key").Snapshot
+		if snapshot.State != quotaKnown || len(snapshot.Windows) != 1 || snapshot.Windows[0].Remaining != expected {
+			t.Fatalf("%s: %+v", file.Email, snapshot)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("expected both agy credentials, got %+v", files.Files)
+	}
+	if got := fetchQuota(context.Background(), accountCredential{Provider: "agy", AuthIndex: "missing"}, "wrong-key").Snapshot; got.Err != "management_http_401" {
+		t.Fatalf("invalid management key must be rejected before dispatch: %+v", got)
 	}
 }

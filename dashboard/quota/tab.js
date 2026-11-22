@@ -9,6 +9,10 @@ function quotaWindowLabel(window){return window.name+(window.scope?' ('+window.s
 function quotaNote(credential){
   const error=credential.error;
   if(error==='unsupported_provider')return 'Quota polling is not supported for this provider.';
+  if(error==='quota_provider_unavailable')return 'No quota provider for this account. Enable or update the Antigravity CLI plugin with quota-provider support.';
+  if(error==='quota_endpoint_or_account_unavailable')return 'CPA could not find this account or its quota endpoint. Refresh the account catalog and check host quota support.';
+  if(error==='provider_auth_rejected')return 'Devin rejected the account credential. Sign in to Devin again.';
+  if(error==='provider_access_denied')return 'Devin denied quota access for this account.';
   if(error==='management_key_missing'||error==='management_http_401'||error==='management_http_403')return null;
   if(error==='management_request_failed'||error==='management_url_invalid')return 'Could not reach CPA. Check MODEL_COMBO_MANAGEMENT_URL and the CPA loopback listener.';
   if(error==='pending')return 'Waiting for the first quota fetch.';

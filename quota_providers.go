@@ -20,6 +20,10 @@ import (
 const claudeQuotaURL = "https://api.anthropic.com/api/oauth/usage"
 const codexQuotaURL = "https://chatgpt.com/backend-api/wham/usage"
 
+// Devin request is from Management Center 6abace9; CPA substitutes $TOKEN$ in the body.
+const devinQuotaURL = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+const devinQuotaBody = `{"metadata":{"ideName":"chisel","ideVersion":"3000.10.21","apiKey":"$TOKEN$","locale":"en","os":"darwin","extensionVersion":"3000.10.21","clientName":"chisel"}}`
+
 var antigravityQuotaURLs = [...]string{
 	"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
@@ -94,6 +98,13 @@ func fetchQuota(ctx context.Context, credential accountCredential, key string) q
 		project, _ := json.Marshal(map[string]string{"project": credential.ProjectID})
 		data = string(project)
 		headers["User-Agent"] = "antigravity/hub/2.23.0 darwin/arm64"
+	case "devin":
+		endpoints = []string{devinQuotaURL}
+		method = "POST"
+		data = devinQuotaBody
+		headers = map[string]string{"Content-Type": "application/json", "Connect-Protocol-Version": "1"}
+	case "agy":
+		return fetchPluginQuota(ctx, credential, key)
 	default:
 		// The typed auth catalog does not expose plugin quota capabilities or IDs.
 		return quotaFailure(source, "unsupported_provider", false)
@@ -139,6 +150,10 @@ func fetchQuota(ctx context.Context, credential accountCredential, key string) q
 			continue
 		}
 		if wrapped.StatusCode < 200 || wrapped.StatusCode >= 300 {
+			if provider == "devin" {
+				result = devinStatusFailure(wrapped.StatusCode)
+				continue
+			}
 			result = quotaFailure(source, fmt.Sprintf("upstream_http_%d", wrapped.StatusCode), wrapped.StatusCode == 429 || wrapped.StatusCode >= 500)
 			continue
 		}
@@ -159,6 +174,8 @@ func fetchQuota(ctx context.Context, credential accountCredential, key string) q
 			snapshot = parseCodexQuota(body)
 		case "antigravity":
 			snapshot = parseBucketQuota(body)
+		case "devin":
+			snapshot = parseDevinQuota(body)
 		}
 		snapshot.Source, snapshot.FetchedAt = source, time.Now()
 		result = quotaFetchResult{Snapshot: snapshot}
@@ -290,6 +307,161 @@ func parseBucketQuota(data []byte) quotaSnapshot {
 		snapshot.State = quotaUnknown
 		snapshot.Err = "parse_failure"
 	} else if bad {
+		snapshot.State = quotaPartial
+	}
+	return snapshot
+}
+
+func devinStatusFailure(status int) quotaFetchResult {
+	switch {
+	case status == 401:
+		return quotaFailure("devin", "provider_auth_rejected", false)
+	case status == 403:
+		return quotaFailure("devin", "provider_access_denied", false)
+	case status == 429:
+		return quotaFailure("devin", "provider_rate_limited", true)
+	case status >= 500:
+		return quotaFailure("devin", "provider_unavailable", true)
+	}
+	return quotaFailure("devin", "provider_request_failed", false)
+}
+
+// devinFraction reads a 0–100 percentage (number or decimal string) as a 0–1 fraction.
+func devinFraction(raw json.RawMessage) (float64, bool) {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		raw = json.RawMessage(strings.TrimSpace(text))
+	}
+	n, ok := quotaNumber(raw)
+	if !ok || n < 0 || n > 100 {
+		return 0, false
+	}
+	return n / 100, true
+}
+
+func devinReset(raw json.RawMessage) time.Time {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		raw = json.RawMessage(strings.TrimSpace(text))
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil || n <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(n, 0)
+}
+
+func parseDevinQuota(data []byte) quotaSnapshot {
+	var payload struct {
+		UserStatus struct {
+			PlanStatus map[string]json.RawMessage `json:"planStatus"`
+		} `json:"userStatus"`
+	}
+	if json.Unmarshal(data, &payload) != nil {
+		return quotaSnapshot{State: quotaUnknown, Err: "quota_response_invalid"}
+	}
+	plan := payload.UserStatus.PlanStatus
+	snapshot := quotaSnapshot{State: quotaKnown}
+	for _, name := range []string{"daily", "weekly"} {
+		if remaining, ok := devinFraction(plan[name+"QuotaRemainingPercent"]); ok {
+			snapshot.Windows = append(snapshot.Windows, quotaWindow{Name: name, Remaining: remaining, ResetAt: devinReset(plan[name+"QuotaResetAtUnix"])})
+		}
+	}
+	switch len(snapshot.Windows) {
+	case 0:
+		return quotaSnapshot{State: quotaUnknown, Err: "quota_empty_data"}
+	case 1:
+		snapshot.State = quotaPartial
+	}
+	return snapshot
+}
+
+// fetchPluginQuota delegates to the host, which dispatches to the credential's quota provider.
+func fetchPluginQuota(ctx context.Context, credential accountCredential, key string) quotaFetchResult {
+	const source = "agy"
+	if strings.TrimSpace(key) == "" {
+		return quotaFailure(source, "management_key_missing", false)
+	}
+	base, err := managementURL(os.Getenv("MODEL_COMBO_MANAGEMENT_URL"))
+	if err != nil {
+		return quotaFailure(source, "management_url_invalid", false)
+	}
+	if credential.AuthIndex == "" {
+		return quotaFailure(source, "missing_auth_index", false)
+	}
+	base.Path = "/v0/management/quota/fetch"
+	payload, _ := json.Marshal(map[string]string{"auth_index": credential.AuthIndex})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base.String(), bytes.NewReader(payload))
+	if err != nil {
+		return quotaFailure(source, "management_request_invalid", false)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := quotaHTTPClient.Do(req)
+	if err != nil {
+		return quotaFailure(source, "management_request_failed", true)
+	}
+	defer response.Body.Close()
+	switch code := response.StatusCode; {
+	case code == 501:
+		return quotaFailure(source, "quota_provider_unavailable", false)
+	case code == 404:
+		return quotaFailure(source, "quota_endpoint_or_account_unavailable", false)
+	case code < 200 || code >= 300:
+		return quotaFailure(source, fmt.Sprintf("management_http_%d", code), code == 429 || code >= 500)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		return quotaFailure(source, "management_request_failed", true)
+	}
+	snapshot := parsePluginQuota(body)
+	snapshot.Source, snapshot.FetchedAt = source, time.Now()
+	return quotaFetchResult{Snapshot: snapshot}
+}
+
+// pluginField returns the camelCase value when present, else the snake_case alias.
+func pluginField(m map[string]json.RawMessage, camel, snake string) json.RawMessage {
+	if raw, ok := m[camel]; ok {
+		return raw
+	}
+	return m[snake]
+}
+
+func parsePluginQuota(data []byte) quotaSnapshot {
+	var payload struct {
+		Groups []map[string]json.RawMessage `json:"groups"`
+	}
+	if json.Unmarshal(data, &payload) != nil {
+		return quotaSnapshot{State: quotaUnknown, Err: "quota_response_invalid"}
+	}
+	snapshot := quotaSnapshot{State: quotaKnown}
+	bad := false
+	for _, group := range payload.Groups {
+		var name string
+		json.Unmarshal(pluginField(group, "displayName", "display_name"), &name)
+		var buckets []map[string]json.RawMessage
+		json.Unmarshal(group["buckets"], &buckets)
+		for _, bucket := range buckets {
+			remaining, ok := quotaNumber(pluginField(bucket, "remainingFraction", "remaining_fraction"))
+			if !ok || remaining < 0 || remaining > 1 {
+				bad = true
+				continue
+			}
+			var window string
+			json.Unmarshal(bucket["window"], &window)
+			label := strings.TrimSpace(name + " " + window)
+			var reset time.Time
+			var text string
+			if json.Unmarshal(pluginField(bucket, "resetTime", "reset_time"), &text) == nil {
+				reset, _ = time.Parse(time.RFC3339, text)
+			}
+			snapshot.Windows = append(snapshot.Windows, quotaWindow{Name: label, Scope: name, Remaining: remaining, ResetAt: reset})
+		}
+	}
+	if len(snapshot.Windows) == 0 {
+		return quotaSnapshot{State: quotaUnknown, Err: "quota_empty_data"}
+	}
+	if bad {
 		snapshot.State = quotaPartial
 	}
 	return snapshot

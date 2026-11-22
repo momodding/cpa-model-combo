@@ -24,8 +24,6 @@
           <select id="usage-provider-model"><option value="">All provider models</option></select>
         </div>
         <div class="usage-actions">
-          <button id="usage-pricing" class="secondary" type="button">Model pricing</button>
-          <button id="usage-reset" class="danger-button" type="button">Reset</button>
           <button id="usage-refresh" class="secondary" type="button">Refresh</button>
         </div>
       </div>
@@ -35,15 +33,24 @@
         <div class="usage-control"><label for="usage-to">To</label><input id="usage-to" type="datetime-local" step="1"></div>
       </div>
 
-      <div class="usage-filter-row" aria-label="Usage filters">
-        <div class="usage-control"><label for="usage-source">Source</label><select id="usage-source"><option value="">All sources</option></select></div>
-        <div class="usage-control"><label for="usage-service-tier">Service tier</label><select id="usage-service-tier"><option value="">All service tiers</option></select></div>
-        <div class="usage-control"><label for="usage-result">Result</label><select id="usage-result"><option value="">All results</option><option value="success">Success</option><option value="failed">Failed without status</option></select></div>
-        <div class="usage-control"><label for="usage-auto-refresh">Refresh interval</label><select id="usage-auto-refresh" disabled><option>Every 15 seconds</option></select></div>
+      <details id="usage-more-filters" class="usage-disclosure">
+        <summary>More filters</summary>
+        <div class="usage-filter-row" aria-label="Usage filters">
+          <div class="usage-control"><label for="usage-source">Source</label><select id="usage-source"><option value="">All sources</option></select></div>
+          <div class="usage-control"><label for="usage-service-tier">Service tier</label><select id="usage-service-tier"><option value="">All service tiers</option></select></div>
+          <div class="usage-control"><label for="usage-result">Result</label><select id="usage-result"><option value="">All results</option><option value="success">Success</option><option value="failed">Failed without status</option></select></div>
+        </div>
+      </details>
+
+      <div class="usage-tools" role="group" aria-label="Usage tools">
+        <span class="usage-tools-label">Usage tools</span>
+        <button id="usage-pricing" class="secondary" type="button">Model pricing</button>
+        <button id="usage-reset" class="danger-button" type="button">Reset</button>
       </div>
 
       <div class="usage-status-row">
         <span id="usage-status" class="usage-status" aria-live="polite">Open Usage tracking to load data.</span>
+        <span class="usage-refresh-note">Refreshes every 15 seconds while visible</span>
         <span id="usage-live" class="usage-live" hidden>Live while this tab is visible</span>
       </div>
 
@@ -91,7 +98,7 @@
             <details id="group-columns" class="column-picker"><summary>Columns</summary><div id="group-column-options" class="column-menu"></div></details>
           </div>
         </div>
-        <div id="group-table-scroll" class="table-scroll"><table id="group-table" class="usage-table"><thead><tr id="group-headers"></tr></thead><tbody id="usage-groups"><tr><td class="empty-row">Usage data has not loaded.</td></tr></tbody></table></div>
+        <div id="group-table-scroll" class="table-scroll"><table id="group-table" aria-labelledby="breakdown-title" class="usage-table"><thead><tr id="group-headers"></tr></thead><tbody id="usage-groups"><tr><td class="empty-row">Usage data has not loaded.</td></tr></tbody></table></div>
         <div class="pagination"><span id="group-page-status">0 groups</span><button id="group-prev" class="secondary" type="button" disabled>Previous</button><button id="group-next" class="secondary" type="button" disabled>Next</button></div>
       </section>
 
@@ -103,7 +110,7 @@
             <details id="request-columns" class="column-picker"><summary>Columns</summary><div id="request-column-options" class="column-menu"></div></details>
           </div>
         </div>
-        <div id="request-table-scroll" class="table-scroll"><table id="request-table" class="usage-table"><thead><tr id="request-headers"></tr></thead><tbody id="usage-requests"><tr><td class="empty-row">Request data has not loaded.</td></tr></tbody></table></div>
+        <div id="request-table-scroll" class="table-scroll"><table id="request-table" aria-labelledby="request-title" class="usage-table"><thead><tr id="request-headers"></tr></thead><tbody id="usage-requests"><tr><td class="empty-row">Request data has not loaded.</td></tr></tbody></table></div>
         <div class="pagination"><span id="request-page-status">0 requests</span><button id="request-prev" class="secondary" type="button" disabled>Previous</button><button id="request-next" class="secondary" type="button" disabled>Next</button></div>
       </section>
     </section>

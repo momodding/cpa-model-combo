@@ -365,6 +365,7 @@ function renderUsageFilterOptions(){
   mergeSelectOptions(usageServiceTierEl,(overview.service_tiers||[]).map(value=>({value,label:value})),'All service tiers',usageState.serviceTier);
   const results=(overview.results||[]).map(value=>({value,label:resultDisplay(value)}));
   mergeSelectOptions(usageResultEl,results,'All results',usageState.result);
+  if(usageState.source||usageState.serviceTier||usageState.result)document.getElementById('usage-more-filters').open=true;
 }
 function usageControlChanged(){
   clearChartActive(false);usageState.group.offset=0;usageState.request.offset=0;
