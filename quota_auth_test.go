@@ -81,7 +81,7 @@ func TestManagementKeyCaptureAndRecovery(t *testing.T) {
 			if seenAuth.Load() != "Bearer test-key" || got.Windows[0].Remaining != 0.8 {
 				t.Fatalf("auth=%v windows=%+v", seenAuth.Load(), got.Windows)
 			}
-			body, _ := json.Marshal(quotaDiagnostics(&modelRouterPlugin{quota: m}))
+			body, _ := json.Marshal(quotaDiagnostics(&modelRouterPlugin{quota: m}, 0))
 			if strings.Contains(string(body), "test-key") || !strings.Contains(string(body), `"authentication":"available"`) {
 				t.Fatalf("diagnostics: %s", body)
 			}
@@ -112,7 +112,7 @@ func TestManagementKeyPrecedenceAndRejection(t *testing.T) {
 		t.Fatalf("keys = %v", keys)
 	}
 	m.mu.Unlock()
-	got := quotaDiagnostics(&modelRouterPlugin{quota: m})
+	got := quotaDiagnostics(&modelRouterPlugin{quota: m}, 0)
 	m.mu.Lock()
 	if got.Polling.Authentication != "rejected" {
 		t.Fatalf("auth = %q", got.Polling.Authentication)

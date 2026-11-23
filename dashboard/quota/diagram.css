@@ -1,0 +1,76 @@
+/* Routing diagram: state colors come from shared.css tokens; cyan, orange and dark red have no token. */
+.quota-routing {
+  --rd-cyan: color-mix(in srgb, var(--blue) 50%, var(--teal));
+  --rd-orange: color-mix(in srgb, var(--amber) 70%, var(--danger));
+  --rd-dark-red: color-mix(in srgb, var(--danger) 70%, var(--ink));
+}
+.rd-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
+.rd-toolbar select { min-width: 220px; max-width: 100%; height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); color: var(--ink); font-size: 13px; }
+.rd-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: 11px; }
+.rd-legend li { display: inline-flex; align-items: center; gap: 5px; }
+.rd-legend li::before { content: ""; width: 10px; height: 10px; border: 2px solid var(--rd-c); border-radius: 3px; background: color-mix(in srgb, var(--rd-c) 22%, transparent); }
+.rd-note { margin: 0; color: var(--amber); font-size: 12px; }
+.rd-note:empty { display: none; }
+
+.routing-diagram { height: 440px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background-color: color-mix(in srgb, var(--paper) 82%, transparent); background-image: radial-gradient(var(--chart-grid) 1px, transparent 1px); background-size: 18px 18px; }
+.routing-diagram .vue-flow__edge-path { stroke: var(--line-strong); stroke-width: 1.5; }
+.routing-diagram .rd-edge-active .vue-flow__edge-path { stroke: var(--chart-reasoning); stroke-width: 2.5; }
+.routing-diagram .rd-edge-fallback .vue-flow__edge-path { stroke: var(--amber); stroke-width: 2; stroke-dasharray: 6 4; animation: rd-dash .6s linear infinite; }
+.rd-fallback-note { color: var(--amber); }
+.rd-handle { opacity: 0; pointer-events: none; }
+.rd-empty { margin: 0; padding: 28px 16px; color: var(--muted); font-size: 13px; text-align: center; }
+
+/* Every state sets --rd-c; node, legend and details reuse it. */
+.rd-pending { --rd-c: var(--muted); }
+.rd-evaluating { --rd-c: var(--blue); }
+.rd-selected { --rd-c: var(--rd-cyan); }
+.rd-executing { --rd-c: var(--chart-reasoning); }
+.rd-success { --rd-c: var(--teal); }
+.rd-failed { --rd-c: var(--danger); }
+.rd-skipped { --rd-c: var(--muted); }
+.rd-exhausted { --rd-c: var(--rd-dark-red); }
+.rd-cooldown { --rd-c: var(--rd-orange); }
+.rd-fallback { --rd-c: var(--amber); }
+
+.rd-node { display: grid; gap: 5px; width: 236px; min-height: 52px; padding: 9px 12px; border: 1px solid var(--rd-c, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--rd-c, var(--line)) 9%, var(--paper)); color: var(--ink); font-size: 12.5px; line-height: 1.35; cursor: pointer; pointer-events: all; transition: border-color .16s ease-out, background-color .16s ease-out; }
+.rd-node:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue) 35%, transparent); outline-offset: 2px; }
+.rd-node[aria-pressed="true"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--rd-c) 28%, transparent); }
+.rd-node.rd-pending, .rd-node.rd-skipped { border-style: dashed; }
+.rd-node.rd-skipped { opacity: .55; }
+.rd-node.rd-selected, .rd-node.rd-executing { border-width: 2px; }
+.rd-node.rd-evaluating { animation: rd-pulse 1.4s ease-in-out infinite; }
+.rd-node.rd-executing { animation: rd-glow 1.2s ease-in-out infinite; }
+.rd-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rd-glyph { flex: none; min-width: 1.1em; color: var(--rd-c); font-weight: 800; text-align: center; }
+.rd-glyph:empty { display: none; }
+.rd-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.rd-timer { flex: none; color: var(--rd-c); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rd-sub { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.rd-quota { display: flex; align-items: center; gap: 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.rd-quota progress { flex: 1 1 auto; min-width: 0; height: 6px; border: 0; border-radius: 99px; overflow: hidden; background: var(--surface-soft); accent-color: var(--teal); }
+.rd-quota progress::-webkit-progress-bar { background: var(--surface-soft); }
+.rd-quota progress::-webkit-progress-value { background: var(--teal); border-radius: 99px; }
+.rd-quota progress::-moz-progress-bar { background: var(--teal); }
+
+.rd-details { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--paper) 82%, transparent); }
+.rd-details[hidden] { display: none; }
+.rd-details-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
+.rd-details-head h3 { flex: 1 1 12ch; min-width: 0; margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.rd-state { padding: 3px 9px; border: 1px solid var(--rd-c); border-radius: 99px; color: var(--rd-c); font-size: 11px; font-weight: 800; }
+.rd-details dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0 0 10px; font-size: 12.5px; }
+.rd-details dt { color: var(--muted); }
+.rd-details dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.rd-details h4 { margin: 12px 0 6px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+.rd-timeline { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.rd-timeline li { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.rd-timeline .rd-state { padding: 0 7px; font-size: 10px; }
+.rd-timeline time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@keyframes rd-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 24%, transparent); } }
+@keyframes rd-glow { 50% { box-shadow: 0 0 12px 3px color-mix(in srgb, var(--chart-reasoning) 55%, transparent); } }
+@keyframes rd-dash { to { stroke-dashoffset: -10; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rd-node, .routing-diagram .vue-flow__edge.animated path, .routing-diagram .rd-edge-fallback .vue-flow__edge-path { animation: none !important; transition: none; }
+}
+@media (max-width: 768px) { .routing-diagram { height: 360px; } .rd-toolbar select { flex: 1 1 100%; } }

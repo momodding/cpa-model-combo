@@ -43,6 +43,8 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	for _, skip := range skips {
 		p.recordRoutingSkip(identity, skip)
 	}
+	emit := p.emitter(route, identity, routerRequestID)
+	emitPreflight(emit, skips)
 	if allCooling {
 		return pluginapi.ExecutorResponse{}, cooldownRouteError(route, retryAfter)
 	}
@@ -74,6 +76,8 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 				ordinal = attempt
 			}
 			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
+			emit(ordinal, "selected", selection.model, account, nil)
+			emit(ordinal, "executing", selection.model, account, nil)
 			response, err := host.Execute(hostRequest(request, bodyInfo, target, false, account))
 			status := response.StatusCode
 			if status == 0 && err == nil {
@@ -83,6 +87,7 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 				status = statusFromError(err)
 			}
 			if err == nil && status >= 200 && status < 300 {
+				emit(ordinal, "success", selection.model, account, nil)
 				if account.ID == "" {
 					p.runtime.MarkSuccess(route, selection.model)
 				} else {
@@ -107,6 +112,11 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			if err == nil {
 				err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
 			}
+			failReason := fallbackReason(status, nil)
+			if account.ID == "" {
+				failReason = fallbackReason(status, err)
+			}
+			emit(ordinal, "failed", selection.model, account, func(e *routingEvent) { e.Reason = failReason })
 			if err != nil && terminalRequestError(err) {
 				// Cancellation and deadline stop immediately, whatever response status or fallback policy accompanies them.
 				if account.ID != "" {
@@ -126,10 +136,11 @@ func (p *modelRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			lastStatus = status
 			if account.ID != "" {
 				p.runtime.MarkAccountFailure(route, selection.model, account.ID)
+			} else {
+				p.runtime.MarkFailure(route, selection.model)
 			}
-		}
-		if len(candidates) > 0 && candidates[0].ID == "" {
-			p.runtime.MarkFailure(route, selection.model)
+			p.emitCooldown(emit, route, ordinal, selection.model, account, failReason)
+			emit(ordinal, "fallback", selection.model, account, func(e *routingEvent) { e.Reason = failReason })
 		}
 	}
 	detail := ""

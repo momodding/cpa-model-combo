@@ -98,7 +98,7 @@ func TestHeadroomAllowedAccountsAndIneligibleAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := p.headroomCandidates(context.Background(), pluginapi.ExecutorRequest{Model: "smart", Metadata: map[string]any{"session_id": "s"}}, h, route, accounts)
+	candidates := p.headroomCandidates(context.Background(), pluginapi.ExecutorRequest{Model: "smart", Metadata: map[string]any{"session_id": "s"}}, h, route, accounts, p.emitter(route, correlationIdentity{}, ""))
 	if len(candidates) != 2 || candidates[0].credential.ID != "a" || candidates[1].credential.ID != "c" {
 		t.Fatalf("candidates=%+v", candidates)
 	}

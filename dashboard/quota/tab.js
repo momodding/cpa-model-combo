@@ -1,4 +1,4 @@
-const quotaState={data:null,stale:false,controller:null,timer:0,generation:0,active:false};
+const quotaState={data:null,stale:false,controller:null,timer:0,generation:0,active:false,diagramVisible:false};
 const QUOTA_STATUS_API='/v0/management/plugins/model-combo/quota-status';
 const QUOTA_BANNERS={
   missing:['missing','Open Model Combo with your CPA management session to enable polling. After a CPA restart, sign in again.'],
@@ -73,7 +73,13 @@ function renderQuotaStatus(){
   if(!credentials.length)panel.replaceChildren(quotaEl('p','No active quota credentials. Credentials appear after a headroom route first uses them.','quota-empty'));
   else if(!shown.length)panel.replaceChildren(quotaEl('p','No accounts match the current filters.','quota-empty'));
   else{const grid=quotaEl('div','','quota-grid');shown.forEach(item=>grid.appendChild(quotaCard(item)));panel.replaceChildren(grid)}
+  if(!updateRoutingDiagram(data))renderHeadroomText(data);
+  else routingDiagramShown();
+}
+function renderHeadroomText(data){
+  document.getElementById('routing-diagram-view').hidden=true;
   const routes=document.getElementById('quota-routes');
+  routes.hidden=false;
   const describe=selection=>[selection.model,selection.credential?.label||selection.credential?.auth_index,selection.state,selection.score==null?'':'score '+selection.score,selection.reason].filter(Boolean).join(' · ');
   const nodes=[];
   (data.routes||[]).forEach(route=>{
@@ -91,7 +97,7 @@ async function loadQuotaStatus(){
   panel.setAttribute('aria-busy','true');
   if(!quotaState.data)panel.textContent='Loading quota status…';
   try{
-    const data=await requestManagementJSON(QUOTA_STATUS_API,{signal:controller.signal});
+    const data=await requestManagementJSON(QUOTA_STATUS_API+'?events_since='+routingDiagramCursor(),{signal:controller.signal});
     if(generation!==quotaState.generation)return;
     quotaState.data=data;quotaState.stale=false;announce.textContent='';
     renderQuotaStatus();
@@ -104,19 +110,33 @@ async function loadQuotaStatus(){
     if(generation===quotaState.generation){
       panel.setAttribute('aria-busy','false');
       quotaState.controller=null;
-      if(quotaState.active&&!document.hidden)quotaState.timer=window.setTimeout(loadQuotaStatus,15000);
+      if(quotaState.active&&!document.hidden)quotaState.timer=window.setTimeout(loadQuotaStatus,quotaPollDelay());
     }
   }
 }
+// 2s while the diagram is on screen, 15s otherwise (Quota tab open but scrolled away).
+function quotaPollDelay(){return quotaState.diagramVisible?2000:15000}
 function stopQuotaPolling(){
   quotaState.active=false;
   window.clearTimeout(quotaState.timer);
   quotaState.generation++;
   if(quotaState.controller)quotaState.controller.abort();
   quotaState.controller=null;
+  stopRoutingDiagramClock();
+}
+function observeRoutingDiagram(){
+  if(typeof IntersectionObserver==='undefined')return;
+  new IntersectionObserver(entries=>{
+    const visible=entries[entries.length-1].isIntersecting;
+    if(visible===quotaState.diagramVisible)return;
+    quotaState.diagramVisible=visible;
+    // Re-arm the pending timer only; an in-flight request reschedules itself with the new delay.
+    if(quotaState.active&&!document.hidden&&!quotaState.controller){window.clearTimeout(quotaState.timer);quotaState.timer=window.setTimeout(loadQuotaStatus,quotaPollDelay())}
+  }).observe(document.getElementById('routing-diagram'));
 }
 function initializeQuotaEvents(){
   document.getElementById('quota-refresh').addEventListener('click',loadQuotaStatus);
   document.getElementById('quota-search').addEventListener('input',renderQuotaStatus);
   document.getElementById('quota-provider').addEventListener('change',renderQuotaStatus);
+  observeRoutingDiagram();
 }

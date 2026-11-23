@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -115,7 +116,15 @@ func handleModelRouterManagementWithHost(plugin *modelRouterPlugin, request plug
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed", "message": "quota diagnostics only supports GET"})
 		}
-		return modelRouterJSONResponse(http.StatusOK, quotaDiagnostics(plugin))
+		var eventsSince uint64
+		if raw := request.Query.Get("events_since"); raw != "" {
+			value, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil {
+				return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{"error": "invalid_query", "message": "events_since must be a non-negative integer"})
+			}
+			eventsSince = value
+		}
+		return modelRouterJSONResponse(http.StatusOK, quotaDiagnostics(plugin, eventsSince))
 	case modelRouterAccountsPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed", "message": "accounts only supports GET"})

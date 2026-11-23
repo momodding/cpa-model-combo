@@ -310,14 +310,18 @@ func (runtime *routeRuntime) Preflight(route modelRoute, accounts map[string][]a
 	return eligible, excluded, skips, 0, false
 }
 
+func cooldownFor(route modelRoute) time.Duration {
+	if route.CooldownSeconds > 0 {
+		return time.Duration(route.CooldownSeconds) * time.Second
+	}
+	return defaultCooldownSeconds * time.Second
+}
+
 func (runtime *routeRuntime) MarkFailure(route modelRoute, model string) {
 	if runtime == nil || strings.TrimSpace(model) == "" {
 		return
 	}
-	cooldown := time.Duration(route.CooldownSeconds) * time.Second
-	if cooldown <= 0 {
-		cooldown = defaultCooldownSeconds * time.Second
-	}
+	cooldown := cooldownFor(route)
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	state := runtime.stateLocked(route)
@@ -366,10 +370,7 @@ func (runtime *routeRuntime) MarkAccountFailure(route modelRoute, model, id stri
 	if runtime == nil || strings.TrimSpace(model) == "" || id == "" {
 		return
 	}
-	cooldown := time.Duration(route.CooldownSeconds) * time.Second
-	if cooldown <= 0 {
-		cooldown = defaultCooldownSeconds * time.Second
-	}
+	cooldown := cooldownFor(route)
 	runtime.MarkAccountCooldown(route, model, id, runtime.now().Add(cooldown))
 	runtime.RecordFailure(route, model)
 }

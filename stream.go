@@ -74,6 +74,8 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 	for _, skip := range skips {
 		p.recordRoutingSkip(identity, skip)
 	}
+	emit := p.emitter(route, identity, routerRequestID)
+	emitPreflight(emit, skips)
 	if allCooling {
 		return cooldownRouteError(route, retryAfter)
 	}
@@ -106,8 +108,11 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 				ordinal = attempt
 			}
 			p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
+			emit(ordinal, "selected", selection.model, account, nil)
+			emit(ordinal, "executing", selection.model, account, nil)
 			receivedPayload, err := forwardStreamAttempt(ctx, request, bodyInfo, target, requestedModel, pluginStreamID, host, onPayload, account)
 			if err == nil {
+				emit(ordinal, "success", selection.model, account, nil)
 				if account.ID == "" {
 					p.runtime.MarkSuccess(route, selection.model)
 				} else {
@@ -118,6 +123,11 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 			if cancelled := ctx.Err(); cancelled != nil {
 				return cancelled
 			}
+			failReason := fallbackReason(statusFromError(err), nil)
+			if account.ID == "" {
+				failReason = fallbackReason(statusFromError(err), err)
+			}
+			emit(ordinal, "failed", selection.model, account, func(e *routingEvent) { e.Reason = failReason })
 			retry := eligibleRouteFailure(err, policy)
 			if account.ID != "" {
 				err = safeRestrictedFailure(err)
@@ -125,15 +135,18 @@ func (p *modelRouterPlugin) executeStreamWithHost(ctx context.Context, request p
 			if retry {
 				if account.ID == "" {
 					p.runtime.MarkFailure(route, selection.model)
+					p.emitCooldown(emit, route, ordinal, selection.model, account, failReason)
 				} else if receivedPayload {
 					p.runtime.RecordFailure(route, selection.model)
 				} else {
 					p.runtime.MarkAccountFailure(route, selection.model, account.ID)
+					p.emitCooldown(emit, route, ordinal, selection.model, account, failReason)
 				}
 			}
 			if receivedPayload || !retry || p.config.FallbackDisabled {
 				return err
 			}
+			emit(ordinal, "fallback", selection.model, account, func(e *routingEvent) { e.Reason = failReason })
 			lastErr = err
 		}
 	}
