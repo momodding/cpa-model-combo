@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -210,8 +211,24 @@ func TestModelRouterManagementDashboardReusesCPAMCSessionAndTheme(t *testing.T) 
 			t.Fatalf("dashboard missing async pricing guard %q", required)
 		}
 	}
+	// Vendored third-party bundles legitimately contain innerHTML and namespace URLs; the guard applies to first-party code, so cut exact vendor bytes out.
+	firstParty := page
+	vendored, err := fs.ReadDir(dashboardSource, "dashboard/vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range vendored {
+		content, err := fs.ReadFile(dashboardSource, "dashboard/vendor/"+entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(firstParty, string(content)) {
+			t.Fatalf("dashboard does not embed vendored %s verbatim", entry.Name())
+		}
+		firstParty = strings.ReplaceAll(firstParty, string(content), "")
+	}
 	for _, forbidden := range []string{"http://", "https://", "innerHTML", "<input type=\"text\" data-target-field=\"model\"", "setDirty(true)", "/v0/management/api-keys", "/v1/models"} {
-		if strings.Contains(page, forbidden) {
+		if strings.Contains(firstParty, forbidden) {
 			t.Fatalf("dashboard contains forbidden text %q", forbidden)
 		}
 	}

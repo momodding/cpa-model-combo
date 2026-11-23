@@ -421,7 +421,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
       return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }] } });
     });
     await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
-    await page.route('**/v0/management/plugins/model-combo/quota-status', route => {
+    await page.route('**/v0/management/plugins/model-combo/quota-status*', route => {
       quotaRequests++;
       return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null, authentication: 'missing' }, credentials: [{ provider: 'devin', auth_index: 'index-d', label: 'Account A', state: 'unknown', source: 'devin', error: 'unsupported_provider', windows: [] }, { provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
     });

@@ -9,6 +9,8 @@
 {{include "dashboard/configuration/styles.css"}}
 {{include "dashboard/usage/styles.css"}}
 {{include "dashboard/quota/styles.css"}}
+{{include "dashboard/vendor/vue-flow-core.css"}}
+{{include "dashboard/quota/diagram.css"}}
 </style>
 </head>
 <body>
@@ -46,6 +48,8 @@
 {{include "dashboard/shared/elements.html"}}
 {{include "dashboard/configuration/templates.html"}}
 <script>
+{{include "dashboard/vendor/vue.runtime.global.prod.js"}}
+{{include "dashboard/vendor/vue-flow-core.iife.js"}}
 {{include "dashboard/shared.js"}}
 {{include "dashboard/configuration/routes.js"}}
 {{include "dashboard/configuration/tab.js"}}
@@ -53,6 +57,8 @@
 {{include "dashboard/usage/tables.js"}}
 {{include "dashboard/usage/charts.js"}}
 {{include "dashboard/usage/pricing.js"}}
+{{include "dashboard/quota/routing-model.js"}}
+{{include "dashboard/quota/diagram.js"}}
 {{include "dashboard/quota/tab.js"}}
 {{include "dashboard/app.js"}}
 </script>

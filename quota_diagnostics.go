@@ -2,6 +2,7 @@ package main
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,13 @@ type quotaDiagnosticRoute struct {
 	Skips     []quotaDiagnosticSelection `json:"skips"`
 }
 
+type quotaDiagnosticCooldown struct {
+	Route        string    `json:"route"`
+	Model        string    `json:"model"`
+	CredentialID string    `json:"credential_id,omitempty"`
+	Until        time.Time `json:"until"`
+}
+
 type quotaDiagnosticResponse struct {
 	Polling struct {
 		Running    bool       `json:"running"`
@@ -47,8 +55,12 @@ type quotaDiagnosticResponse struct {
 		// missing, available, or rejected; never carries the key.
 		Authentication string `json:"authentication"`
 	} `json:"polling"`
-	Credentials []quotaDiagnosticCredential `json:"credentials"`
-	Routes      []quotaDiagnosticRoute      `json:"routes"`
+	Credentials     []quotaDiagnosticCredential `json:"credentials"`
+	Routes          []quotaDiagnosticRoute      `json:"routes"`
+	Cooldowns       []quotaDiagnosticCooldown   `json:"cooldowns"`
+	Events          []routingEvent              `json:"events"`
+	EventCursor     uint64                      `json:"event_cursor"`
+	EventsTruncated bool                        `json:"events_truncated"`
 }
 
 func diagnosticTime(t time.Time) *time.Time {
@@ -62,8 +74,30 @@ func diagnosticSelection(s headroomSelection) quotaDiagnosticSelection {
 	return quotaDiagnosticSelection{Model: s.Model, Credential: quotaDiagnosticIdentity{ID: s.Credential.ID, Provider: s.Credential.Provider, AuthIndex: s.Credential.AuthIndex, Label: s.Credential.Label}, Score: s.Score, State: s.State, Reason: s.Reason}
 }
 
-func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
-	result := quotaDiagnosticResponse{Credentials: []quotaDiagnosticCredential{}, Routes: []quotaDiagnosticRoute{}}
+// appendCooldowns copies unexpired model and account cooldowns of one route; the caller holds runtime.mu.
+func appendCooldowns(out []quotaDiagnosticCooldown, route modelRoute, state *routeState, now time.Time) []quotaDiagnosticCooldown {
+	for _, target := range route.Targets {
+		model := strings.TrimSpace(target.Model)
+		key := routeKey(model)
+		if until := state.cooldowns[key]; until.After(now) {
+			out = append(out, quotaDiagnosticCooldown{Route: route.Alias, Model: model, Until: until})
+		}
+		ids := make([]string, 0, len(state.accountCooldowns[key]))
+		for id, until := range state.accountCooldowns[key] {
+			if until.After(now) {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			out = append(out, quotaDiagnosticCooldown{Route: route.Alias, Model: model, CredentialID: id, Until: state.accountCooldowns[key][id]})
+		}
+	}
+	return out
+}
+
+func quotaDiagnostics(p *modelRouterPlugin, eventsSince uint64) quotaDiagnosticResponse {
+	result := quotaDiagnosticResponse{Credentials: []quotaDiagnosticCredential{}, Routes: []quotaDiagnosticRoute{}, Cooldowns: []quotaDiagnosticCooldown{}, Events: []routingEvent{}}
 	if p == nil {
 		return result
 	}
@@ -107,7 +141,11 @@ func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
 	}
 	if runtime := p.runtime; runtime != nil {
 		runtime.mu.Lock()
+		now := runtime.now()
 		for _, route := range p.config.Routes {
+			if state := runtime.states[routeKey(route.Alias)]; state != nil {
+				result.Cooldowns = appendCooldowns(result.Cooldowns, route, state, now)
+			}
 			if route.Strategy != routeStrategyHeadroom {
 				continue
 			}
@@ -125,5 +163,7 @@ func quotaDiagnostics(p *modelRouterPlugin) quotaDiagnosticResponse {
 		}
 		runtime.mu.Unlock()
 	}
+	// The ring has its own mutex and is read after every runtime and quota lock is released.
+	result.Events, result.EventCursor, result.EventsTruncated = p.events.since(eventsSince)
 	return result
 }

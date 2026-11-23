@@ -62,7 +62,7 @@ func TestQuotaDiagnosticsPendingAndStale(t *testing.T) {
 	m.now = func() time.Time { return now }
 	m.entries["pending"] = &quotaPollEntry{credential: accountCredential{AuthIndex: "pending"}}
 	m.entries["stale"] = &quotaPollEntry{credential: accountCredential{AuthIndex: "stale"}, hasSnapshot: true, snapshot: quotaSnapshot{State: quotaKnown, FetchedAt: now.Add(-9 * time.Second), Windows: []quotaWindow{{Remaining: 1}}}}
-	got := quotaDiagnostics(&modelRouterPlugin{quota: m})
+	got := quotaDiagnostics(&modelRouterPlugin{quota: m}, 0)
 	if len(got.Credentials) != 2 || got.Credentials[0].Error != "pending" || got.Credentials[0].State != "unknown" || got.Credentials[1].Error != "stale" || got.Credentials[1].State != "unknown" || len(got.Credentials[1].Windows) != 0 {
 		t.Fatalf("credentials = %+v", got.Credentials)
 	}

@@ -68,7 +68,7 @@ type affinityHost interface {
 	AffinityLookup(pluginapi.HostAffinityLookupRequest) (pluginapi.HostAffinityLookupResponse, error)
 }
 
-func (p *modelRouterPlugin) headroomCandidates(ctx context.Context, request pluginapi.ExecutorRequest, host modelHost, route modelRoute, accounts map[string][]accountCredential) []headroomCandidate {
+func (p *modelRouterPlugin) headroomCandidates(ctx context.Context, request pluginapi.ExecutorRequest, host modelHost, route modelRoute, accounts map[string][]accountCredential, emit emitFunc) []headroomCandidate {
 	var credentials []accountCredential
 	for _, target := range route.Targets {
 		credentials = append(credentials, accounts[routeKey(target.Model)]...)
@@ -78,6 +78,13 @@ func (p *modelRouterPlugin) headroomCandidates(ctx context.Context, request plug
 		snapshots = p.quota.Get(ctx, credentials)
 	}
 	candidates, skips := rankHeadroom(route, accounts, snapshots, request.Model, p.config.QuotaPolling.DefaultUnknownQuotaPercent/100)
+	for _, skip := range skips {
+		state := "skipped"
+		if skip.Reason == "quota_exhausted" {
+			state = "exhausted"
+		}
+		emit(0, state, skip.Model, skip.Credential, withScore(skip.Score, skip.State, skip.Reason))
+	}
 	p.runtime.mu.Lock()
 	if state := p.runtime.stateLocked(route); state != nil {
 		state.headroomSkips = skips
@@ -108,6 +115,9 @@ func (p *modelRouterPlugin) headroomCandidates(ctx context.Context, request plug
 			}
 		}
 	}
+	for _, candidate := range candidates {
+		emit(0, "pending", candidate.target, candidate.credential, withScore(candidate.score, candidate.state.String(), ""))
+	}
 	return candidates
 }
 
@@ -120,7 +130,8 @@ func (p *modelRouterPlugin) recordHeadroom(route modelRoute, candidate headroomC
 }
 
 func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, host modelHost, route modelRoute, accounts map[string][]accountCredential, identity correlationIdentity, bodyInfo executionBody, routerRequestID string, policy fallbackPolicy) (pluginapi.ExecutorResponse, error) {
-	candidates := p.headroomCandidates(context.Background(), request, host, route, accounts)
+	emit := p.emitter(route, identity, routerRequestID)
+	candidates := p.headroomCandidates(context.Background(), request, host, route, accounts, emit)
 	limit := p.config.attemptLimit(len(candidates))
 	var lastErr error
 	lastTarget, reason := "", ""
@@ -132,6 +143,8 @@ func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, h
 			ordinal = attempt
 		}
 		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
+		emit(ordinal, "selected", candidate.target, candidate.credential, withScore(candidate.score, candidate.state.String(), reason))
+		emit(ordinal, "executing", candidate.target, candidate.credential, nil)
 		response, err := host.Execute(hostRequest(request, bodyInfo, target, false, candidate.credential))
 		status := response.StatusCode
 		if status == 0 && err == nil {
@@ -141,6 +154,7 @@ func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, h
 			status = statusFromError(err)
 		}
 		if err == nil && status >= 200 && status < 300 {
+			emit(ordinal, "success", candidate.target, candidate.credential, nil)
 			p.runtime.MarkAccountSuccess(route, candidate.target, candidate.credential.ID)
 			metadata := map[string]any{"route_alias": route.Alias, "selected_model": target, "selected_index": attempt, "headroom_score": candidate.score, "quota_state": candidate.state.String()}
 			if lastTarget != "" {
@@ -153,6 +167,8 @@ func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, h
 		if err == nil {
 			err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
 		}
+		failReason := fallbackReason(status, nil)
+		emit(ordinal, "failed", candidate.target, candidate.credential, func(e *routingEvent) { e.Reason = failReason })
 		if terminalRequestError(err) {
 			return pluginapi.ExecutorResponse{}, safeRestrictedFailure(err)
 		}
@@ -166,6 +182,8 @@ func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, h
 		lastErr, lastTarget = err, target
 		p.recordHeadroom(route, candidate, reason)
 		p.runtime.MarkAccountFailure(route, candidate.target, candidate.credential.ID)
+		p.emitCooldown(emit, route, ordinal, candidate.target, candidate.credential, failReason)
+		emit(ordinal, "fallback", candidate.target, candidate.credential, func(e *routingEvent) { e.Reason = failReason })
 	}
 	detail := ""
 	if lastErr != nil {
@@ -175,7 +193,8 @@ func (p *modelRouterPlugin) executeHeadroom(request pluginapi.ExecutorRequest, h
 }
 
 func (p *modelRouterPlugin) streamHeadroom(ctx context.Context, request pluginapi.ExecutorRequest, streamID string, host modelHost, onPayload func(), route modelRoute, accounts map[string][]accountCredential, identity correlationIdentity, bodyInfo executionBody, routerRequestID string, policy fallbackPolicy) error {
-	candidates := p.headroomCandidates(ctx, request, host, route, accounts)
+	emit := p.emitter(route, identity, routerRequestID)
+	candidates := p.headroomCandidates(ctx, request, host, route, accounts, emit)
 	limit := p.config.attemptLimit(len(candidates))
 	var lastErr error
 	reason := ""
@@ -190,8 +209,11 @@ func (p *modelRouterPlugin) streamHeadroom(ctx context.Context, request pluginap
 			ordinal = attempt
 		}
 		p.attribution.MarkRouted(route.Alias, target, request.Headers, routerRequestID, ordinal)
+		emit(ordinal, "selected", candidate.target, candidate.credential, withScore(candidate.score, candidate.state.String(), reason))
+		emit(ordinal, "executing", candidate.target, candidate.credential, nil)
 		received, err := forwardStreamAttempt(ctx, request, bodyInfo, target, request.Model, streamID, host, onPayload, candidate.credential)
 		if err == nil {
+			emit(ordinal, "success", candidate.target, candidate.credential, nil)
 			p.runtime.MarkAccountSuccess(route, candidate.target, candidate.credential.ID)
 			return nil
 		}
@@ -200,6 +222,7 @@ func (p *modelRouterPlugin) streamHeadroom(ctx context.Context, request pluginap
 		}
 		retry := eligibleRouteFailure(err, policy)
 		reason = fallbackReason(statusFromError(err), nil)
+		emit(ordinal, "failed", candidate.target, candidate.credential, func(e *routingEvent) { e.Reason = reason })
 		err = safeRestrictedFailure(err)
 		p.recordHeadroom(route, candidate, reason)
 		if retry {
@@ -207,11 +230,13 @@ func (p *modelRouterPlugin) streamHeadroom(ctx context.Context, request pluginap
 				p.runtime.RecordFailure(route, candidate.target)
 			} else {
 				p.runtime.MarkAccountFailure(route, candidate.target, candidate.credential.ID)
+				p.emitCooldown(emit, route, ordinal, candidate.target, candidate.credential, reason)
 			}
 		}
 		if received || !retry || p.config.FallbackDisabled {
 			return err
 		}
+		emit(ordinal, "fallback", candidate.target, candidate.credential, func(e *routingEvent) { e.Reason = reason })
 		lastErr = err
 	}
 	detail := ""

@@ -28,7 +28,20 @@
       </details>
 
       <section class="quota-routing" aria-labelledby="quota-routing-title">
-        <div class="section-head"><div class="section-title"><h2 id="quota-routing-title">Headroom routing</h2></div></div>
-        <div id="quota-routes">No headroom routes.</div>
+        <div class="section-head"><div class="section-title"><h2 id="quota-routing-title">Routing diagram</h2></div></div>
+        <div id="routing-diagram-view">
+          <div class="rd-toolbar">
+            <label for="routing-diagram-request" class="sr-only">Request</label>
+            <select id="routing-diagram-request"><option value="">Live — latest request</option></select>
+            <button id="routing-diagram-fit" class="secondary" type="button">Fit</button>
+            <ul class="rd-legend" aria-label="Legend">
+              <li class="rd-pending">Pending</li><li class="rd-evaluating">Evaluating</li><li class="rd-selected">Selected</li><li class="rd-executing">Executing</li><li class="rd-success">Success</li><li class="rd-failed">Failed</li><li class="rd-skipped">Skipped</li><li class="rd-exhausted">Exhausted</li><li class="rd-cooldown">Cooldown</li><li class="rd-fallback">Fallback</li>
+            </ul>
+            <p id="routing-diagram-note" class="rd-note" role="status"></p>
+          </div>
+          <div id="routing-diagram" class="routing-diagram"></div>
+          <aside id="routing-diagram-details" class="rd-details" role="region" aria-label="Routing node details" aria-live="polite" hidden></aside>
+        </div>
+        <div id="quota-routes" hidden>No headroom routes.</div>
       </section>
     </section>
