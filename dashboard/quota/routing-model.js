@@ -1,4 +1,4 @@
-// Pure routing-diagram model: no Vue, no DOM. Plain globals: routingGraph, nodeStates, mergeEvents, nodeEvents.
+// Pure routing-diagram model: no Vue, no DOM. Plain globals: routingGraph, nodeStates, mergeEvents, nodeEvents, routeLastRequest.
 const ROUTING_EVENT_LIMIT=512;
 const ROUTING_STALE_EXECUTING_MS=120000;
 const ROUTING_ROW_HEIGHT=96;
@@ -174,6 +174,16 @@ function routingRequests(events){
     request.seq=event.seq;
   }
   return Array.from(byId.values()).sort((a,b)=>b.seq-a.seq);
+}
+const ROUTING_IN_FLIGHT=['evaluating','selected','executing','fallback'];
+// Status of the newest buffered request of one route, whatever the request picker shows. requests: newest first (routingRequests).
+function routeLastRequest(requests,alias,now){
+  const request=(Array.isArray(requests)?requests:[]).find(item=>item.route===alias);
+  if(!request)return{state:'idle',at:null};
+  const clock=now==null?Date.now():Number(now);
+  if(request.state==='success')return{state:'success',at:request.at};
+  if(ROUTING_IN_FLIGHT.includes(request.state)&&clock-Date.parse(request.at)<ROUTING_STALE_EXECUTING_MS)return{state:'pending',at:request.at};
+  return{state:'failed',at:request.at};
 }
 // buffer: array returned by the previous call (null at start). Cursor is last buffered seq; reset on cursor regression.
 function mergeEvents(buffer,response){

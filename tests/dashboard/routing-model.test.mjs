@@ -8,8 +8,8 @@ import { test } from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '../../dashboard/quota/routing-model.js'), 'utf8');
 
-const { routingGraph, nodeStates, mergeEvents, nodeEvents } = vm.runInNewContext(
-  `${source}\n({ routingGraph, nodeStates, mergeEvents, nodeEvents })`
+const { routingGraph, nodeStates, mergeEvents, nodeEvents, routeLastRequest } = vm.runInNewContext(
+  `${source}\n({ routingGraph, nodeStates, mergeEvents, nodeEvents, routeLastRequest })`
 );
 
 test('allowed vs headroom-unrestricted credential join, including thinking-suffix and model_support_unknown', () => {
@@ -224,4 +224,25 @@ test('fallback edge marking and active path marking', () => {
   // nodeEvents returns focused-request events for cand1 in chronological order
   const cand1Events = nodeEvents(graph, events, 'cred:route-fb:model-x:acc-cand1', 'req-fb');
   assert.deepEqual([...cand1Events].map(e => e.state), ['selected', 'failed', 'fallback']);
+});
+
+test('routeLastRequest reports the newest request of one route', () => {
+  const now = Date.parse('2026-01-01T00:10:00Z');
+  const at = seconds => new Date(now - seconds * 1000).toISOString();
+  const ev = (seq, id, route, state, seconds) => ({ seq, router_request_id: id, route, state, at: at(seconds) });
+  const last = (events, alias) => routeLastRequest(mergeEvents(null, { events, event_cursor: events.length }).requests, alias, now);
+
+  assert.equal(last([], 'a').state, 'idle');
+  assert.equal(last([], 'a').at, null);
+  // Fallback then success stays success.
+  assert.equal(last([ev(1, 'r1', 'a', 'failed', 30), ev(2, 'r1', 'a', 'fallback', 29), ev(3, 'r1', 'a', 'success', 28)], 'a').state, 'success');
+  // Final failure ending in cooldown.
+  assert.equal(last([ev(1, 'r1', 'a', 'executing', 30), ev(2, 'r1', 'a', 'failed', 29), ev(3, 'r1', 'a', 'cooldown', 29)], 'a').state, 'failed');
+  // Fresh executing is pending; stale executing is failed.
+  assert.equal(last([ev(1, 'r1', 'a', 'executing', 5)], 'a').state, 'pending');
+  assert.equal(last([ev(1, 'r1', 'a', 'executing', 600)], 'a').state, 'failed');
+  // Another route's newer request is ignored.
+  const mixed = [ev(1, 'r1', 'a', 'success', 60), ev(2, 'r2', 'b', 'failed', 5)];
+  assert.equal(last(mixed, 'a').state, 'success');
+  assert.equal(last(mixed, 'c').state, 'idle');
 });

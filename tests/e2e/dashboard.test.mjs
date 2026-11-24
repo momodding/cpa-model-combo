@@ -418,12 +418,14 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await page.route('**/v0/management/plugins/model-combo/accounts', route => route.fulfill({ json: { credentials: [{ id: 'account-a', provider: 'codex', label: 'Account A', models: [{ id: 'model-a' }] }] } }));
     await page.route('**/v0/management/plugins/model-combo/config', route => {
       if (route.request().method() === 'PATCH') { saved = route.request().postDataJSON(); return route.fulfill({ json: {} }); }
-      return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }] } });
+      return route.fulfill({ json: saved || { enabled: true, priority: 0, routes: [{ alias: 'auto', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }, { alias: 'backup', strategy: 'priority', cooldown_seconds: 60, targets: [{ model: 'model-a', weight: 1 }] }] } });
     });
     await page.route('**/v0/management/plugins/model-combo/validate', route => route.fulfill({ json: {} }));
     await page.route('**/v0/management/plugins/model-combo/quota-status*', route => {
       quotaRequests++;
-      return route.fulfill({ json: { polling: { running: true, active_keys: 1, last_tick: null, authentication: 'missing' }, credentials: [{ provider: 'devin', auth_index: 'index-d', label: 'Account A', state: 'unknown', source: 'devin', error: 'unsupported_provider', windows: [] }, { provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
+      const at = new Date().toISOString();
+      const events = [{ seq: 1, router_request_id: 'req-auto', route: 'auto', model: 'model-a', state: 'success', at }, { seq: 2, router_request_id: 'req-backup', route: 'backup', model: 'model-a', state: 'failed', at }];
+      return route.fulfill({ json: { events, event_cursor: 2, polling: { running: true, active_keys: 1, last_tick: null, authentication: 'missing' }, credentials: [{ provider: 'devin', auth_index: 'index-d', label: 'Account A', state: 'unknown', source: 'devin', error: 'unsupported_provider', windows: [] }, { provider: 'codex', auth_index: 'index-a', label: 'Account A', state: 'known', source: 'codex', windows: [{ name: 'primary', scope: '', remaining: 0.75, reset_at: null }] }], routes: [{ alias: 'auto', selection: { model: 'model-a', credential: { label: 'Account A' }, state: 'known', score: 0.75 }, skips: [] }] } });
     });
     await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
     if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
@@ -433,6 +435,19 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await card.locator('[data-field="unknown_quota"]').selectOption('exclude');
     await page.getByRole('tab', { name: 'Quota tracking' }).click();
     await page.getByText('75.0% remaining', { exact: false }).waitFor();
+    // One routing card per route; only the first is open and each header shows alias, strategy and last-request state.
+    await page.locator('.rd-card .rd-dot[data-state="failed"]').waitFor();
+    assert.equal(await page.locator('.rd-card').count(), 2);
+    assert.equal(await page.locator('.rd-card .rd-dot[data-state="success"]').count(), 1);
+    const backup = page.locator('.rd-card', { hasText: 'backup' });
+    assert.ok((await backup.locator('summary').innerText()).includes('Priority order'));
+    assert.equal(await page.locator('.rd-card .vue-flow').count(), 1);
+    await backup.locator('summary').click();
+    await backup.locator('.vue-flow').waitFor();
+    assert.equal(await page.locator('.rd-card .vue-flow').count(), 2);
+    await backup.locator('summary').click();
+    await backup.locator('.vue-flow').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('.rd-card .vue-flow').count(), 1);
     assert.equal(await page.locator('.quota-card').count(), 2);
     assert.equal(await page.locator('.quota-card progress').count(), 1);
     await page.getByText('Quota polling is not supported for this provider.').waitFor();
