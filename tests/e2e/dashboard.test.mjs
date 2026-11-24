@@ -478,7 +478,7 @@ test('headroom settings persist and quota status refreshes on open and save', { 
     await page.reload({ waitUntil: 'domcontentloaded' });
     if (await page.locator('#auth-dock').isVisible()) { await page.locator('#management-key').fill(managementKey); await page.locator('#connect').click(); }
     await page.locator('#model-status[data-tone="ready"]').waitFor();
-    assert.equal(await page.locator('.route-card [data-field="unknown_quota"]').inputValue(), 'exclude');
+    assert.equal(await page.locator('.route-card').first().locator('[data-field="unknown_quota"]').inputValue(), 'exclude');
     await page.getByRole('tab', { name: 'Quota tracking' }).click();
     assert.equal(await page.locator('[data-quota-field="refresh_seconds"]').inputValue(), '45');
     assert.equal(await page.locator('[data-quota-field="default_unknown_quota_percent"]').inputValue(), '35');
