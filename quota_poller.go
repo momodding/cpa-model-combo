@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"hash/fnv"
 	"os"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ type quotaPollEntry struct {
 	failures    int
 	pending     chan struct{}
 	started     bool
+	nextRefresh time.Time
 }
 
 type QuotaPollingManager struct {
@@ -85,7 +87,7 @@ func (m *QuotaPollingManager) Get(ctx context.Context, credentials []accountCred
 				m.entries[key] = entry
 			}
 			entry.credential, entry.lastUsed = credential, now
-			if entry.pending == nil && !now.Before(entry.snapshot.BackoffUntil) && (!entry.hasSnapshot || now.Sub(entry.snapshot.FetchedAt) >= time.Duration(m.cfg.TTLSeconds)*time.Second) {
+			if entry.pending == nil && !now.Before(entry.nextRefresh) {
 				entry.pending = make(chan struct{})
 			}
 			if !entry.hasSnapshot && entry.pending != nil {
@@ -192,10 +194,32 @@ func (m *QuotaPollingManager) fetchOne(key string, entry *quotaPollEntry, creden
 		if entry.snapshot.FetchedAt.IsZero() {
 			entry.snapshot.FetchedAt = now
 		}
+		if result.Retryable {
+			entry.nextRefresh = entry.snapshot.BackoffUntil
+		} else {
+			entry.nextRefresh = entry.snapshot.FetchedAt.Add(m.refreshDelayLocked(key))
+		}
 		entry.pending, entry.started = nil, false
 	}
 	close(done)
 	m.pumpLocked()
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+// refreshDelayLocked staggers credentials by key so their snapshots never expire together.
+func (m *QuotaPollingManager) refreshDelayLocked(key string) time.Duration {
+	window := time.Duration(min(m.cfg.RefreshSeconds, m.cfg.TTLSeconds)) * time.Second
+	lead := time.Duration(m.cfg.FetchTimeoutSeconds) * time.Second
+	if lead >= window {
+		lead = window / 2
+	}
+	base := window - lead
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	return base - time.Duration(h.Sum64()%uint64(base/4+1))
 }
 
 func (m *QuotaPollingManager) loop() {
@@ -206,35 +230,36 @@ func (m *QuotaPollingManager) loop() {
 			m.mu.Unlock()
 			return
 		}
-		interval := time.Duration(m.cfg.RefreshSeconds) * time.Second
+		now := m.now()
+		m.lastTick = now
+		idle := time.Duration(m.cfg.IdleSeconds) * time.Second
+		next := now.Add(idle)
+		for key, entry := range m.entries {
+			expiry := entry.lastUsed.Add(idle)
+			if !now.Before(expiry) {
+				if entry.pending != nil && !entry.started {
+					close(entry.pending)
+				}
+				delete(m.entries, key)
+				continue
+			}
+			if expiry.Before(next) {
+				next = expiry
+			}
+			if entry.pending == nil && !now.Before(entry.nextRefresh) {
+				entry.pending = make(chan struct{})
+			}
+			if entry.pending == nil && entry.nextRefresh.Before(next) {
+				next = entry.nextRefresh
+			}
+		}
+		m.pumpLocked()
 		m.mu.Unlock()
-		timer := time.NewTimer(interval)
+		timer := time.NewTimer(next.Sub(now))
 		select {
 		case <-timer.C:
-			m.mu.Lock()
-			now := m.now()
-			m.lastTick = now
-			for key, entry := range m.entries {
-				if now.Sub(entry.lastUsed) > time.Duration(m.cfg.IdleSeconds)*time.Second {
-					if entry.pending != nil && !entry.started {
-						close(entry.pending)
-					}
-					delete(m.entries, key)
-					continue
-				}
-				if entry.pending == nil && !now.Before(entry.snapshot.BackoffUntil) {
-					entry.pending = make(chan struct{})
-				}
-			}
-			m.pumpLocked()
-			m.mu.Unlock()
 		case <-m.wake:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			timer.Stop()
 		}
 	}
 }
