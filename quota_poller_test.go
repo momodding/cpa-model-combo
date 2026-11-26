@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -167,5 +168,105 @@ func TestQuotaPollerDiscardsInflightAfterDisable(t *testing.T) {
 	m.mu.Unlock()
 	if count != 0 {
 		t.Fatalf("discarded fetch restored %d entries", count)
+	}
+}
+
+func TestQuotaRefreshDelayStaggersPerCredential(t *testing.T) {
+	m := newQuotaPollingManager(routerConfig{QuotaPolling: quotaPollingConfig{RefreshSeconds: 60, IdleSeconds: 600, TTLSeconds: 60, MaxStaleSeconds: 300, FetchTimeoutSeconds: 5, MaxConcurrent: 3, ColdWaitMS: 1500}})
+	seen := map[time.Duration]bool{}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := 0; i < 200; i++ {
+		d := m.refreshDelayLocked(quotaKey(accountCredential{Provider: "codex", AuthIndex: fmt.Sprintf("acct-%d", i)}))
+		if d < 41250*time.Millisecond || d > 55*time.Second {
+			t.Fatalf("delay %v outside [41.25s, 55s]", d)
+		}
+		seen[d] = true
+	}
+	if len(seen) < 190 {
+		t.Fatalf("only %d distinct delays for 200 credentials", len(seen))
+	}
+}
+
+func TestQuotaPollerRefreshesCredentialsIndependently(t *testing.T) {
+	cfg := pollerTestConfig()
+	cfg.QuotaPolling.IdleSeconds = 60
+	m := newQuotaPollingManager(cfg)
+	defer m.Reconcile(routerConfig{})
+	var clockMu sync.Mutex
+	now := time.Now()
+	m.now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+	advanceTo := func(at time.Time) { clockMu.Lock(); now = at; clockMu.Unlock() }
+	var callsMu sync.Mutex
+	calls := map[string]int{}
+	release := make(chan struct{}) // holds every refetch so the pending window is deterministic
+	m.fetch = func(_ context.Context, c accountCredential, _ string) quotaFetchResult {
+		callsMu.Lock()
+		calls[c.AuthIndex]++
+		refetch := calls[c.AuthIndex] > 1
+		callsMu.Unlock()
+		if refetch {
+			<-release
+		}
+		return quotaFetchResult{Snapshot: quotaSnapshot{State: quotaKnown, FetchedAt: m.now()}}
+	}
+	delay := func(c accountCredential) time.Duration {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.refreshDelayLocked(quotaKey(c))
+	}
+	a := accountCredential{Provider: "codex", AuthIndex: "acct-0"}
+	b := accountCredential{Provider: "codex", AuthIndex: "acct-1"}
+	for i := 2; delay(b) == delay(a); i++ {
+		b.AuthIndex = fmt.Sprintf("acct-%d", i)
+	}
+	creds := []accountCredential{a, b}
+	start := m.now()
+	if got := m.Get(context.Background(), creds); got[quotaKey(a)].State != quotaKnown || got[quotaKey(b)].State != quotaKnown {
+		t.Fatalf("cold = %+v", got)
+	}
+	m.mu.Lock()
+	first, second := a, b
+	if m.entries[quotaKey(b)].nextRefresh.Before(m.entries[quotaKey(a)].nextRefresh) {
+		first, second = b, a
+	}
+	firstAt := m.entries[quotaKey(first)].nextRefresh
+	secondAt := m.entries[quotaKey(second)].nextRefresh
+	m.mu.Unlock()
+	advanceTo(firstAt)
+	m.Get(context.Background(), creds)
+	m.mu.Lock()
+	firstDone, secondPending := m.entries[quotaKey(first)].pending, m.entries[quotaKey(second)].pending
+	m.mu.Unlock()
+	if firstDone == nil {
+		t.Fatal("first credential not pending at its own deadline")
+	}
+	if secondPending != nil {
+		t.Fatal("second credential refreshed before its own deadline")
+	}
+	close(release)
+	<-firstDone
+	got := m.Get(context.Background(), creds)
+	callsMu.Lock()
+	firstCalls, secondCalls := calls[first.AuthIndex], calls[second.AuthIndex]
+	callsMu.Unlock()
+	if firstCalls != 2 || secondCalls != 1 {
+		t.Fatalf("calls first=%d second=%d, want 2 and 1", firstCalls, secondCalls)
+	}
+	if got[quotaKey(first)].State != quotaKnown || got[quotaKey(second)].State != quotaKnown {
+		t.Fatalf("snapshots = %+v", got)
+	}
+	ttl := time.Duration(cfg.QuotaPolling.TTLSeconds) * time.Second
+	if age := m.now().Sub(got[quotaKey(second)].FetchedAt); age <= 0 || age >= ttl {
+		t.Fatalf("second snapshot age %v, want in (0, %v)", age, ttl)
+	}
+	if firstAt.Sub(start) >= ttl {
+		t.Fatalf("first deadline %v not before TTL %v", firstAt.Sub(start), ttl)
+	}
+	m.mu.Lock()
+	next := m.entries[quotaKey(first)].nextRefresh
+	m.mu.Unlock()
+	if !next.After(secondAt) {
+		t.Fatalf("first next refresh %v not after second's %v", next, secondAt)
 	}
 }

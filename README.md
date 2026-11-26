@@ -192,8 +192,8 @@ The optional `quota_polling` block in the example shows all defaults. Every valu
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `refresh_seconds` | 60 | Background refresh interval for active credentials. |
-| `idle_seconds` | 600 | Remove credentials unused for longer than this interval. |
+| `refresh_seconds` | 60 | Per-credential refresh period. Each credential refreshes at its own staggered time before `ttl_seconds` expires (period capped at `ttl_seconds` minus `fetch_timeout_seconds`), so credentials do not go unknown together. |
+| `idle_seconds` | 600 | Remove credentials unused for this interval or longer. |
 | `ttl_seconds` | 60 | Age at which a request triggers a refresh. |
 | `max_stale_seconds` | 300 | Maximum usable snapshot age and retry-backoff cap. Older snapshots become unknown. |
 | `fetch_timeout_seconds` | 5 | Timeout for each shared quota fetch. |
